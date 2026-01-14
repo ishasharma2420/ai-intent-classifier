@@ -47,7 +47,19 @@ Return STRICT JSON only:
     const text = completion.choices[0].message.content;
     const json = JSON.parse(text);
 
-    res.json(json);
+    const readiness_bucket =
+      json.readiness_score >= 0.75 ? "HIGH" : "LOW";
+
+    const response = {
+      intent: json.intent,
+      readiness_score: json.readiness_score,
+      risk_category: json.risk_category,
+      propensity_score: json.propensity_score,
+      decision_summary: json.decision_summary,
+      readiness_bucket
+    };
+
+    res.json(response);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "AI classification failed" });
