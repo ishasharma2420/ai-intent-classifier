@@ -28,7 +28,7 @@ Inputs:
 - ready_now: ${ready_now}
 - free_text: ${free_text}
 
-Return STRICT JSON only:
+Return STRICT JSON only (no markdown, no explanations):
 {
   "intent": "schedule | explore | nurture",
   "readiness_score": number between 0 and 1,
@@ -44,25 +44,41 @@ Return STRICT JSON only:
       temperature: 0.2
     });
 
-    const text = completion.choices[0].message.content;
-    const json = JSON.parse(text);
+    // 🔧 FIX: safely clean OpenAI response before parsing
+    const rawText = completion.choices[0].message.content || "";
 
+    const cleanedText = rawText
+      .replace(/```json/g, "")
+      .replace(/```/g, "")
+      .trim();
+
+    const parsed = JSON.parse(cleanedText);
+
+    // 🔧 FIX: bucket readiness for LSQ condition nodes
     const readiness_bucket =
-      json.readiness_score >= 0.75 ? "HIGH" : "LOW";
+      parsed.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    const response = {
-      intent: json.intent,
-      readiness_score: json.readiness_score,
-      risk_category: json.risk_category,
-      propensity_score: json.propensity_score,
-      decision_summary: json.decision_summary,
+    res.json({
+      intent: parsed.intent,
+      readiness_score: parsed.readiness_score,
+      risk_category: parsed.risk_category,
+      propensity_score: parsed.propensity_score,
+      decision_summary: parsed.decision_summary,
       readiness_bucket
-    };
+    });
 
-    res.json(response);
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "AI classification failed" });
+    console.error("Intent classifier error:", err);
+
+    // 🚑 SAFETY FALLBACK — prevents bot spinner from hanging
+    res.json({
+      intent: "explore",
+      readiness_score: 0.4,
+      risk_category: "medium",
+      propensity_score: 40,
+      decision_summary: "Fallback response due to temporary AI issue",
+      readiness_bucket: "LOW"
+    });
   }
 });
 
