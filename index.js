@@ -1,4 +1,3 @@
-```js
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
@@ -23,11 +22,11 @@ app.post("/intent-classifier", async (req, res) => {
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
-      response_format: { type: "json_object" }, // 🔴 THIS IS CRITICAL
       messages: [
         {
           role: "system",
-          content: "You are an intent classifier. Respond with valid JSON only."
+          content:
+            "You are an intent classifier. Respond with STRICT valid JSON only. No text outside JSON."
         },
         {
           role: "user",
@@ -43,18 +42,20 @@ Inputs:
 Return JSON in this exact structure:
 {
   "intent": "schedule | explore | nurture",
-  "readiness_score": number between 0 and 1,
+  "readiness_score": 0.0,
   "risk_category": "low | medium | high",
-  "propensity_score": number between 0 and 100,
-  "decision_summary": string
+  "propensity_score": 0,
+  "decision_summary": ""
 }
 `
         }
       ]
     });
 
-    // Safe parse (OpenAI guarantees JSON here)
-    const result = JSON.parse(completion.choices[0].message.content);
+    const raw = completion.choices[0].message.content.trim();
+
+    // Defensive parse (critical)
+    const result = JSON.parse(raw);
 
     const readiness_bucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
@@ -67,7 +68,6 @@ Return JSON in this exact structure:
       decision_summary: result.decision_summary,
       readiness_bucket
     });
-
   } catch (error) {
     console.error("Classifier error:", error);
     res.status(500).json({ error: "AI classification failed" });
