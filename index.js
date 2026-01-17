@@ -47,22 +47,27 @@ app.post("/intent-classifier", async (req, res) => {
       req.body?.Before?.ProspectID;
 
     if (!prospectId) {
-      return res.status(400).json({ error: "ProspectID not found" });
+      return res.status(400).json({
+        error: "ProspectID not found"
+      });
     }
 
     const studentInquiry = req.body?.Current?.mx_Student_Inquiry || "";
     const enrollmentTimeline = req.body?.Current?.mx_Enrollment_Timeline || "";
     const engagementReadiness = req.body?.Current?.mx_Engagement_Readiness || "";
 
-    /** ✅ CORRECT OpenAI call */
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
-      response_format: { type: "json_object" },
+
+      text: {
+        format: "json"
+      },
+
       input: [
         {
           role: "system",
-          content: "You are an intent classification engine. Return JSON only."
+          content: "You are an intent classification engine. Return valid JSON only."
         },
         {
           role: "user",
@@ -87,6 +92,7 @@ Return exactly:
     });
 
     const outputText = response.output_text;
+
     if (!outputText) {
       throw new Error("Empty AI response");
     }
@@ -96,7 +102,6 @@ Return exactly:
     const readinessBucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    /** ✅ Use API field names (mx_) */
     await updateLeadSquaredAsync(prospectId, {
       mx_AI_Detected_Intent: result.intent,
       mx_AI_Readiness_Score: result.readiness_score,
@@ -111,7 +116,6 @@ Return exactly:
       prospectId,
       ai_result: result
     });
-
   } catch (err) {
     console.error("Intent classifier failed:", err);
 
