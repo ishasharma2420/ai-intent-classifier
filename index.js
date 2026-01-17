@@ -1,34 +1,60 @@
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
+/**
+ * ENV VARIABLES REQUIRED
+ * OPENAI_API_KEY
+ * LSQ_ACCESS_KEY
+ * LSQ_SECRET_KEY
+ * LSQ_HOST   (example: https://api-in21.leadsquared.com)
+ */
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// --- helper: safely extract JSON from OpenAI output ---
-function extractJSON(text) {
-  // Remove ```json and ``` if present
-  const cleaned = text
-    .replace(/```json/gi, "")
-    .replace(/```/g, "")
-    .trim();
+// Helper: Update Lead in LeadSquared
+async function updateLead(leadId, payload) {
+  const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
 
-  return JSON.parse(cleaned);
+  const body = {
+    LeadId: leadId,
+    ...payload
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`LeadSquared update failed: ${text}`);
+  }
+
+  return text;
 }
 
 app.post("/intent-classifier", async (req, res) => {
   try {
     const {
+      leadId,
       student_inquiry = "",
       enrollment_timeline = "",
       ready_now = "",
       free_text = ""
     } = req.body;
+
+    if (!leadId) {
+      return res.status(400).json({ error: "leadId is required" });
+    }
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -37,7 +63,7 @@ app.post("/intent-classifier", async (req, res) => {
         {
           role: "system",
           content:
-            "You are an intent classifier. Respond ONLY with valid JSON. Do not wrap in markdown. No explanations."
+            "You are an intent classifier. Respond with STRICT valid JSON only. No text outside JSON."
         },
         {
           role: "user",
@@ -63,23 +89,26 @@ Return JSON in this exact structure:
       ]
     });
 
-    const raw = completion.choices[0].message.content;
-
-    // 👇 TEMPORARY LOG (keep for now)
-    console.log("RAW OPENAI RESPONSE:\n", raw);
-
-    const result = extractJSON(raw);
+    const raw = completion.choices[0].message.content.trim();
+    const result = JSON.parse(raw);
 
     const readiness_bucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
+    // 🔹 Update LeadSquared fields
+    await updateLead(leadId, {
+      "Detected Intent": result.intent,
+      "Readiness Score": result.readiness_score,
+      "Readiness Bucket": readiness_bucket,
+      "Risk Category": result.risk_category,
+      "AI Propensity Score": result.propensity_score,
+      "Last AI Decision": result.decision_summary
+    });
+
     res.json({
-      intent: result.intent,
-      readiness_score: result.readiness_score,
-      risk_category: result.risk_category,
-      propensity_score: result.propensity_score,
-      decision_summary: result.decision_summary,
-      readiness_bucket
+      status: "success",
+      readiness_bucket,
+      intent: result.intent
     });
   } catch (error) {
     console.error("Classifier error:", error);
