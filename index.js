@@ -10,6 +10,17 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
+// --- helper: safely extract JSON from OpenAI output ---
+function extractJSON(text) {
+  // Remove ```json and ``` if present
+  const cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  return JSON.parse(cleaned);
+}
+
 app.post("/intent-classifier", async (req, res) => {
   try {
     const {
@@ -19,17 +30,14 @@ app.post("/intent-classifier", async (req, res) => {
       free_text = ""
     } = req.body;
 
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error("OPENAI_API_KEY not set");
-    }
-
-    const response = await openai.responses.create({
-      model: "gpt-4.1-mini",
-      input: [
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      temperature: 0.2,
+      messages: [
         {
           role: "system",
           content:
-            "You are an intent classifier. Respond with STRICT valid JSON only. No text outside JSON."
+            "You are an intent classifier. Respond ONLY with valid JSON. Do not wrap in markdown. No explanations."
         },
         {
           role: "user",
@@ -55,9 +63,12 @@ Return JSON in this exact structure:
       ]
     });
 
-    const raw = response.output_text;
+    const raw = completion.choices[0].message.content;
 
-    const result = JSON.parse(raw);
+    // 👇 TEMPORARY LOG (keep for now)
+    console.log("RAW OPENAI RESPONSE:\n", raw);
+
+    const result = extractJSON(raw);
 
     const readiness_bucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
@@ -70,9 +81,8 @@ Return JSON in this exact structure:
       decision_summary: result.decision_summary,
       readiness_bucket
     });
-
   } catch (error) {
-    console.error("Classifier error FULL:", error);
+    console.error("Classifier error:", error);
     res.status(500).json({
       error: "Intent classification failed",
       details: error.message
