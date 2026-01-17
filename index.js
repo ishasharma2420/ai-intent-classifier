@@ -7,26 +7,28 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+/**
+ * ENV REQUIRED
+ * OPENAI_API_KEY
+ * LSQ_ACCESS_KEY
+ * LSQ_SECRET_KEY
+ * LSQ_HOST  (example: https://api-in21.leadsquared.com)
+ */
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
 /**
- * Update LeadSquared
- * IMPORTANT:
- * - ProspectID (not LeadId)
- * - Payload MUST be an array
- * - Field KEYS must be mx_*
+ * 🔑 CORRECT API FOR AUTOMATION UPDATES
  */
-async function updateLeadSquared(prospectId, payload) {
+async function updateProspect(prospectId, payload) {
   const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
 
-  const body = [
-    {
-      ProspectID: prospectId,
-      ...payload
-    }
-  ];
+  const body = {
+    ProspectID: prospectId,
+    ...payload
+  };
 
   const res = await fetch(url, {
     method: "POST",
@@ -36,8 +38,8 @@ async function updateLeadSquared(prospectId, payload) {
 
   const text = await res.text();
 
-  if (!res.ok || text.toLowerCase().includes("error")) {
-    throw new Error(text);
+  if (!res.ok) {
+    throw new Error(`LeadSquared update failed: ${text}`);
   }
 
   return text;
@@ -45,7 +47,9 @@ async function updateLeadSquared(prospectId, payload) {
 
 app.post("/intent-classifier", async (req, res) => {
   try {
-    // ProspectID always comes from these blocks
+    /**
+     * 🔑 ALWAYS PRESENT IN AUTOMATION PAYLOADS
+     */
     const prospectId =
       req.body?.Current?.ProspectID ||
       req.body?.After?.ProspectID ||
@@ -53,8 +57,7 @@ app.post("/intent-classifier", async (req, res) => {
 
     if (!prospectId) {
       return res.status(400).json({
-        error: "ProspectID missing",
-        receivedKeys: Object.keys(req.body || {})
+        error: "ProspectID missing from automation payload"
       });
     }
 
@@ -74,7 +77,7 @@ app.post("/intent-classifier", async (req, res) => {
         {
           role: "system",
           content:
-            "You are an intent classifier. Respond with STRICT valid JSON only."
+            "You are an intent classifier. Return STRICT JSON only."
         },
         {
           role: "user",
@@ -86,7 +89,7 @@ Inputs:
 - enrollment_timeline: ${enrollmentTimeline}
 - engagement_readiness: ${engagementReadiness}
 
-Return JSON exactly:
+Return JSON:
 {
   "intent": "schedule | explore | nurture",
   "readiness_score": 0.0,
@@ -106,20 +109,20 @@ Return JSON exactly:
     const readinessBucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    // 🔑 USE INTERNAL mx_ FIELD KEYS ONLY
-    await updateLeadSquared(prospectId, {
-      mx_AI_Detected_Intent: result.intent,
-      mx_AI_Readiness_Score: result.readiness_score,
-      mx_AI_Risk_Category: result.risk_category,
-      mx_AI_Propensity_Score: result.propensity_score,
-      mx_Last_AI_Decision: result.decision_summary,
-      mx_Readiness_Bucket: readinessBucket
+    await updateProspect(prospectId, {
+      "mx_AI_Detected_Intent": result.intent,
+      "mx_AI_Readiness_Score": result.readiness_score,
+      "mx_Readiness_Bucket": readinessBucket,
+      "mx_AI_Risk_Category": result.risk_category,
+      "mx_AI_Propensity_Score": result.propensity_score,
+      "mx_Last_AI_Decision": result.decision_summary
     });
 
     res.json({
       status: "success",
       prospectId,
-      readinessBucket
+      readinessBucket,
+      intent: result.intent
     });
   } catch (err) {
     console.error("Intent classifier error:", err);
