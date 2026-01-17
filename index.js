@@ -59,11 +59,11 @@ app.post("/intent-classifier", async (req, res) => {
     const response = await openai.responses.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
-
       text: {
-        format: "json"
+        format: {
+          type: "json_object"
+        }
       },
-
       input: [
         {
           role: "system",
@@ -71,22 +71,13 @@ app.post("/intent-classifier", async (req, res) => {
         },
         {
           role: "user",
-          content: `
-Classify student intent.
-
-Inquiry: ${studentInquiry}
-Timeline: ${enrollmentTimeline}
-Engagement: ${engagementReadiness}
-
-Return exactly:
-{
-  "intent": "schedule | explore | nurture",
-  "readiness_score": 0.0,
-  "risk_category": "low | medium | high",
-  "propensity_score": 0,
-  "decision_summary": ""
-}
-`
+          content: "Classify student intent.\n\nInquiry: " +
+            studentInquiry +
+            "\nTimeline: " +
+            enrollmentTimeline +
+            "\nEngagement: " +
+            engagementReadiness +
+            "\n\nReturn exactly:\n{\n  \"intent\": \"schedule | explore | nurture\",\n  \"readiness_score\": 0.0,\n  \"risk_category\": \"low | medium | high\",\n  \"propensity_score\": 0,\n  \"decision_summary\": \"\"\n}"
         }
       ]
     });
