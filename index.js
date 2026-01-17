@@ -1,14 +1,14 @@
 import express from "express";
 import cors from "cors";
-import fetch from "node-fetch";
 import OpenAI from "openai";
+import crypto from "crypto";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 /**
- * ENV VARIABLES REQUIRED
+ * ENV VARIABLES REQUIRED (SET IN RENDER, NOT GITHUB)
  *
  * OPENAI_API_KEY
  * LSQ_ACCESS_KEY
@@ -20,12 +20,26 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// -----------------------------
-// MAIN WEBHOOK ENDPOINT
-// -----------------------------
+// ---------- Utility: LeadSquared API signer ----------
+function buildLSQAuthParams() {
+  const timestamp = Date.now();
+  const hash = crypto
+    .createHmac("sha256", process.env.LSQ_SECRET_KEY)
+    .update(`${process.env.LSQ_ACCESS_KEY}${timestamp}`)
+    .digest("hex");
+
+  return {
+    accessKey: process.env.LSQ_ACCESS_KEY,
+    timestamp,
+    signature: hash
+  };
+}
+
+// ---------- MAIN WEBHOOK ----------
 app.post("/intent-classifier", async (req, res) => {
   try {
-    // 1️⃣ Extract payload from LeadSquared automation
+    console.log("Incoming payload:", JSON.stringify(req.body, null, 2));
+
     const {
       LeadId,
       StudentInquiry = "",
@@ -35,10 +49,10 @@ app.post("/intent-classifier", async (req, res) => {
     } = req.body;
 
     if (!LeadId) {
-      return res.status(400).json({ error: "Missing LeadId" });
+      return res.status(400).json({ error: "LeadId is required" });
     }
 
-    // 2️⃣ Call OpenAI
+    // ---------- OpenAI ----------
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
@@ -53,13 +67,12 @@ app.post("/intent-classifier", async (req, res) => {
           content: `
 Classify student intent.
 
-Inputs:
-- student_inquiry: ${StudentInquiry}
-- enrollment_timeline: ${EnrollmentTimeline}
-- ready_now: ${ReadyNow}
-- free_text: ${FreeText}
+student_inquiry: ${StudentInquiry}
+enrollment_timeline: ${EnrollmentTimeline}
+ready_now: ${ReadyNow}
+free_text: ${FreeText}
 
-Return JSON EXACTLY:
+Return JSON ONLY in this structure:
 {
   "intent": "schedule | explore | nurture",
   "readiness_score": 0.0,
@@ -73,48 +86,70 @@ Return JSON EXACTLY:
     });
 
     const aiRaw = completion.choices[0].message.content.trim();
-    const ai = JSON.parse(aiRaw);
+    const aiResult = JSON.parse(aiRaw);
 
     const readiness_bucket =
-      ai.readiness_score >= 0.75 ? "HIGH" : "LOW";
+      aiResult.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    // 3️⃣ Prepare LeadSquared update payload
+    // ---------- LeadSquared Update ----------
+    const auth = buildLSQAuthParams();
+
     const updatePayload = [
       {
-        LeadId,
-        AI_Intent: ai.intent,
-        AI_ReadinessScore: ai.readiness_score,
-        AI_RiskCategory: ai.risk_category,
-        AI_PropensityScore: ai.propensity_score,
-        AI_DecisionSummary: ai.decision_summary,
-        AI_ReadinessBucket: readiness_bucket
+        Attribute: "AI Intent",
+        Value: aiResult.intent
+      },
+      {
+        Attribute: "AI Readiness Score",
+        Value: aiResult.readiness_score
+      },
+      {
+        Attribute: "AI Readiness Bucket",
+        Value: readiness_bucket
+      },
+      {
+        Attribute: "AI Risk Category",
+        Value: aiResult.risk_category
+      },
+      {
+        Attribute: "AI Propensity Score",
+        Value: aiResult.propensity_score
+      },
+      {
+        Attribute: "AI Decision Summary",
+        Value: aiResult.decision_summary
       }
     ];
 
-    // 4️⃣ Call LeadSquared Update Lead API
-    const lsqUrl = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
+    const url =
+      `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?` +
+      `accessKey=${auth.accessKey}&timestamp=${auth.timestamp}&signature=${auth.signature}`;
 
-    const lsqResponse = await fetch(lsqUrl, {
+    const lsqResponse = await fetch(url, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify(updatePayload)
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        LeadId,
+        Attributes: updatePayload
+      })
     });
 
     const lsqResult = await lsqResponse.json();
 
-    console.log("Lead updated:", lsqResult);
+    console.log("LSQ update response:", lsqResult);
 
-    // 5️⃣ Respond to automation (no data needed)
-    res.status(200).json({ status: "success" });
-  } catch (error) {
-    console.error("Intent classifier failed:", error);
+    res.json({
+      status: "success",
+      leadId: LeadId,
+      intent: aiResult.intent,
+      readiness_bucket
+    });
+  } catch (err) {
+    console.error("Fatal error:", err);
     res.status(500).json({ error: "Intent classification failed" });
   }
 });
 
-// -----------------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`AI Intent Classifier running on port ${PORT}`);
