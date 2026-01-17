@@ -7,29 +7,22 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/**
- * REQUIRED ENV VARIABLES
- * ----------------------
- * OPENAI_API_KEY
- * LSQ_ACCESS_KEY
- * LSQ_SECRET_KEY
- * LSQ_HOST   (example: https://api-in21.leadsquared.com)
- */
-
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
 /**
- * Update Lead in LeadSquared
+ * LeadSquared ASYNC Update (IMPORTANT)
  */
-async function updateLeadSquared(prospectId, fields) {
-  const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
+async function updateLeadSquaredAsync(prospectId, fields) {
+  const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.UpdateAsync?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
 
-  const payload = {
-    ProspectID: prospectId,
-    ...fields
-  };
+  const payload = [
+    {
+      ProspectID: prospectId,
+      ...fields
+    }
+  ];
 
   const response = await fetch(url, {
     method: "POST",
@@ -46,15 +39,8 @@ async function updateLeadSquared(prospectId, fields) {
   return text;
 }
 
-/**
- * Intent Classifier Endpoint
- */
 app.post("/intent-classifier", async (req, res) => {
   try {
-    /**
-     * LeadSquared Automation Payload
-     * ProspectID is ALWAYS inside Before / After / Current
-     */
     const prospectId =
       req.body?.Current?.ProspectID ||
       req.body?.After?.ProspectID ||
@@ -62,37 +48,32 @@ app.post("/intent-classifier", async (req, res) => {
 
     if (!prospectId) {
       return res.status(400).json({
-        error: "ProspectID not found in webhook payload"
+        error: "ProspectID not found"
       });
     }
 
-    // Safe field extraction
     const studentInquiry = req.body?.Current?.mx_Student_Inquiry || "";
     const enrollmentTimeline = req.body?.Current?.mx_Enrollment_Timeline || "";
     const engagementReadiness = req.body?.Current?.mx_Engagement_Readiness || "";
 
-    /**
-     * Call OpenAI
-     */
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
       messages: [
         {
           role: "system",
-          content:
-            "You are an intent classifier. Respond with STRICT valid JSON only."
+          content: "Return STRICT JSON only."
         },
         {
           role: "user",
           content: `
-Classify the student intent.
+Classify student intent.
 
-student_inquiry: ${studentInquiry}
-enrollment_timeline: ${enrollmentTimeline}
-engagement_readiness: ${engagementReadiness}
+Inquiry: ${studentInquiry}
+Timeline: ${enrollmentTimeline}
+Engagement: ${engagementReadiness}
 
-Return JSON exactly like this:
+Return:
 {
   "intent": "schedule | explore | nurture",
   "readiness_score": 0.0,
@@ -112,10 +93,7 @@ Return JSON exactly like this:
     const readinessBucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    /**
-     * Update LeadSquared fields
-     */
-    await updateLeadSquared(prospectId, {
+    await updateLeadSquaredAsync(prospectId, {
       "AI Detected Intent": result.intent,
       "AI Readiness Score": result.readiness_score,
       "Readiness Bucket": readinessBucket,
@@ -126,23 +104,18 @@ Return JSON exactly like this:
 
     res.json({
       status: "success",
-      prospectId,
-      readinessBucket,
-      intent: result.intent
+      prospectId
     });
-  } catch (error) {
-    console.error("Intent classifier error:", error.message);
+  } catch (err) {
+    console.error("Intent classifier failed:", err.message);
 
     res.status(500).json({
       error: "Intent classification failed",
-      details: error.message
+      details: err.message
     });
   }
 });
 
-/**
- * Start server
- */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`AI Intent Classifier running on port ${PORT}`);
