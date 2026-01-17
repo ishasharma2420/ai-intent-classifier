@@ -12,14 +12,18 @@ const openai = new OpenAI({
 });
 
 /**
- * ✅ ASYNC UPDATE — REQUIRED FOR AUTOMATION
+ * ✅ CORRECT ASYNC UPDATE (ARRAY PAYLOAD)
  */
 async function updateProspectAsync(prospectId, attributes) {
   const url = `${process.env.LSQ_HOST}/async-api/lead/update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
 
   const body = {
-    ProspectID: prospectId,
-    Attributes: attributes
+    Leads: [
+      {
+        ProspectID: prospectId,
+        Attributes: attributes
+      }
+    ]
   };
 
   const res = await fetch(url, {
@@ -30,7 +34,8 @@ async function updateProspectAsync(prospectId, attributes) {
 
   const text = await res.text();
 
-  if (!res.ok) {
+  // Async API returns 202 Accepted
+  if (![200, 202].includes(res.status)) {
     throw new Error(`LeadSquared async update failed: ${text}`);
   }
 
@@ -39,7 +44,7 @@ async function updateProspectAsync(prospectId, attributes) {
 
 app.post("/intent-classifier", async (req, res) => {
   try {
-    // ✅ ALWAYS PRESENT IN AUTOMATION PAYLOAD
+    // ✅ ALWAYS PRESENT IN AUTOMATION
     const prospectId =
       req.body?.Current?.ProspectID ||
       req.body?.After?.ProspectID ||
@@ -60,7 +65,7 @@ app.post("/intent-classifier", async (req, res) => {
     const engagementReadiness =
       req.body?.Current?.mx_Engagement_Readiness || "";
 
-    // 🔹 OpenAI intent classification
+    // 🔹 OpenAI classification
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
@@ -100,7 +105,7 @@ Return:
     const readinessBucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    // ✅ ASYNC UPDATE
+    // ✅ ASYNC UPDATE — CORRECT FORMAT
     await updateProspectAsync(prospectId, {
       mx_AI_Detected_Intent: result.intent,
       mx_AI_Readiness_Score: result.readiness_score,
@@ -129,3 +134,4 @@ const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`AI Intent Classifier running on port ${PORT}`);
 });
+v
