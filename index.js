@@ -12,15 +12,50 @@ const openai = new OpenAI({
 });
 
 /**
- * LeadSquared Update Helper
+ * Simple rate limiter for LeadSquared API (25 calls per 5 seconds)
  */
-async function updateLeadSquared(prospectId, payload) {
-  const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
+const rateLimiter = {
+  calls: [],
+  maxCalls: 25,
+  windowMs: 5000,
 
-  const body = {
-    ProspectID: prospectId,
-    ...payload
-  };
+  async throttle() {
+    const now = Date.now();
+    // Remove calls outside the window
+    this.calls = this.calls.filter(t => now - t < this.windowMs);
+
+    if (this.calls.length >= this.maxCalls) {
+      const oldestCall = this.calls[0];
+      const waitTime = this.windowMs - (now - oldestCall);
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      return this.throttle();
+    }
+
+    this.calls.push(now);
+  }
+};
+
+/**
+ * LeadSquared Update Helper
+ * 
+ * LeadSquared Lead.Update API expects:
+ * - leadId as a URL query parameter
+ * - Body: Array of {"Attribute": "schemaName", "Value": "value"} objects
+ * - Schema names for custom fields use mx_ prefix (e.g., mx_AI_Detected_Intent)
+ */
+async function updateLeadSquared(prospectId, fieldsToUpdate) {
+  // Apply rate limiting
+  await rateLimiter.throttle();
+
+  // leadId must be passed as a query parameter, not in the body
+  const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}&leadId=${prospectId}`;
+
+  // LeadSquared expects an array of Attribute/Value pairs
+  // Convert the fields object to the correct format
+  const body = Object.entries(fieldsToUpdate).map(([attribute, value]) => ({
+    Attribute: attribute,
+    Value: String(value) // Ensure value is a string
+  }));
 
   const res = await fetch(url, {
     method: "POST",
@@ -31,7 +66,21 @@ async function updateLeadSquared(prospectId, payload) {
   const text = await res.text();
 
   if (!res.ok) {
-    throw new Error(`LeadSquared update failed: ${text}`);
+    // Parse LeadSquared error response for better debugging
+    let errorDetails = text;
+    try {
+      const errorJson = JSON.parse(text);
+      errorDetails = errorJson.ExceptionMessage || errorJson.Message || text;
+    } catch (e) {
+      // Keep raw text if not JSON
+    }
+
+    // Handle rate limit specifically
+    if (res.status === 429) {
+      throw new Error(`LeadSquared rate limit exceeded. Please retry later.`);
+    }
+
+    throw new Error(`LeadSquared update failed (${res.status}): ${errorDetails}`);
   }
 
   return text;
@@ -112,14 +161,19 @@ Return JSON EXACTLY as:
 
     /**
      * Update LeadSquared
+     * 
+     * NOTE: Use schema names (mx_ prefix) for custom fields.
+     * Update these field names to match your LeadSquared schema.
+     * You can find schema names in LeadSquared under:
+     * Settings > Leads > Lead Fields > Schema Name column
      */
     await updateLeadSquared(prospectId, {
-      "AI Detected Intent": result.intent,
-      "AI Readiness Score": result.readiness_score,
-      "Readiness Bucket": readinessBucket,
-      "AI Risk Category": result.risk_category,
-      "AI Propensity Score": result.propensity_score,
-      "Last AI Decision": result.decision_summary
+      "mx_AI_Detected_Intent": result.intent,
+      "mx_AI_Readiness_Score": result.readiness_score,
+      "mx_Readiness_Bucket": readinessBucket,
+      "mx_AI_Risk_Category": result.risk_category,
+      "mx_AI_Propensity_Score": result.propensity_score,
+      "mx_Last_AI_Decision": result.decision_summary
     });
 
     res.json({
