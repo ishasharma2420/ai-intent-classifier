@@ -8,8 +8,8 @@ app.use(cors());
 app.use(express.json());
 
 /**
- * ENV VARIABLES REQUIRED (Render)
- * --------------------------------
+ * REQUIRED ENV VARIABLES
+ * ----------------------
  * OPENAI_API_KEY
  * LSQ_ACCESS_KEY
  * LSQ_SECRET_KEY
@@ -20,53 +20,56 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-/**
- * Update LeadSquared Lead using ProspectID
- */
+// -----------------------------
+// LeadSquared Update Helper
+// -----------------------------
 async function updateLead(prospectId, payload) {
   const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
 
   const body = {
-    ProspectID: prospectId,
+    LeadId: prospectId, // IMPORTANT: ProspectID == LeadId
     ...payload
   };
 
-  const response = await fetch(url, {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
 
-  const text = await response.text();
+  const text = await res.text();
 
-  if (!response.ok) {
-    throw new Error(text);
+  if (!res.ok) {
+    throw new Error(`LeadSquared update failed: ${text}`);
   }
 
   return text;
 }
 
-/**
- * Intent Classifier Webhook
- */
+// -----------------------------
+// Intent Classifier Endpoint
+// -----------------------------
 app.post("/intent-classifier", async (req, res) => {
   try {
-    // 🔑 THIS IS THE CRITICAL FIX
+    // 🔴 THIS IS THE FIX
     const prospectId = req.body.ProspectID;
 
     if (!prospectId) {
       return res.status(400).json({
-        error: "ProspectID is required"
+        error: "ProspectID is required",
+        receivedKeys: Object.keys(req.body)
       });
     }
 
-    // Safely read CRM fields
-    const studentInquiry = req.body["Student Inquiry"] || "";
-    const enrollmentTimeline = req.body["Enrollment Timeline"] || "";
-    const engagementReadiness = req.body["Engagement Readiness"] || "";
-    const freeText = req.body["Last User Message"] || "";
+    // Safely extract fields from Automation payload
+    const student_inquiry = req.body["Student Inquiry"] || "";
+    const enrollment_timeline = req.body["Enrollment Timeline"] || "";
+    const ready_now = req.body["Engagement Readiness"] || "";
+    const free_text = req.body["Last User Message"] || "";
 
-    // OpenAI classification
+    // -----------------------------
+    // OpenAI Call
+    // -----------------------------
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
@@ -74,7 +77,7 @@ app.post("/intent-classifier", async (req, res) => {
         {
           role: "system",
           content:
-            "You are an intent classifier. Respond with STRICT valid JSON only."
+            "You are an intent classifier. Respond with STRICT valid JSON only. No text outside JSON."
         },
         {
           role: "user",
@@ -82,12 +85,12 @@ app.post("/intent-classifier", async (req, res) => {
 Classify the student intent.
 
 Inputs:
-- student_inquiry: ${studentInquiry}
-- enrollment_timeline: ${enrollmentTimeline}
-- engagement_readiness: ${engagementReadiness}
-- free_text: ${freeText}
+- student_inquiry: ${student_inquiry}
+- enrollment_timeline: ${enrollment_timeline}
+- ready_now: ${ready_now}
+- free_text: ${free_text}
 
-Return JSON ONLY in this format:
+Return JSON in this exact structure:
 {
   "intent": "schedule | explore | nurture",
   "readiness_score": 0.0,
@@ -100,18 +103,19 @@ Return JSON ONLY in this format:
       ]
     });
 
-    const result = JSON.parse(
-      completion.choices[0].message.content.trim()
-    );
+    const raw = completion.choices[0].message.content.trim();
+    const result = JSON.parse(raw);
 
-    const readinessBucket =
+    const readiness_bucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    // Update CRM fields (exact names you confirmed)
+    // -----------------------------
+    // Update LeadSquared Fields
+    // -----------------------------
     await updateLead(prospectId, {
-      "AI Detected Intent": result.intent,
+      "Readiness Bucket": readiness_bucket,
       "AI Readiness Score": result.readiness_score,
-      "Readiness Bucket": readinessBucket,
+      "AI Detected Intent": result.intent,
       "AI Risk Category": result.risk_category,
       "AI Propensity Score": result.propensity_score,
       "Last AI Decision": result.decision_summary
@@ -120,19 +124,20 @@ Return JSON ONLY in this format:
     return res.json({
       status: "success",
       prospectId,
-      readinessBucket,
+      readiness_bucket,
       intent: result.intent
     });
-  } catch (err) {
-    console.error("Intent classifier error:", err.message);
 
+  } catch (error) {
+    console.error("Intent classifier error:", error);
     return res.status(500).json({
       error: "Intent classification failed",
-      details: err.message
+      details: error.message
     });
   }
 });
 
+// -----------------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`AI Intent Classifier running on port ${PORT}`);
