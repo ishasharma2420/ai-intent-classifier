@@ -7,15 +7,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/**
- * REQUIRED ENV VARIABLES
- * ----------------------
- * OPENAI_API_KEY
- * LSQ_ACCESS_KEY
- * LSQ_SECRET_KEY
- * LSQ_HOST   (example: https://api-in21.leadsquared.com)
- */
-
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
@@ -27,7 +18,7 @@ async function updateLead(prospectId, payload) {
   const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
 
   const body = {
-    LeadId: prospectId, // IMPORTANT: ProspectID == LeadId
+    LeadId: prospectId, // LeadId is the correct key for the Update API
     ...payload
   };
 
@@ -38,11 +29,9 @@ async function updateLead(prospectId, payload) {
   });
 
   const text = await res.text();
-
   if (!res.ok) {
     throw new Error(`LeadSquared update failed: ${text}`);
   }
-
   return text;
 }
 
@@ -51,46 +40,43 @@ async function updateLead(prospectId, payload) {
 // -----------------------------
 app.post("/intent-classifier", async (req, res) => {
   try {
-    // 🔴 THIS IS THE FIX
-    const prospectId = req.body.ProspectID;
+    // ✅ FIX: LeadSquared Webhooks wrap the lead data inside a "Data" object
+    const leadData = req.body.Data || req.body; 
+    const prospectId = leadData.ProspectID;
 
     if (!prospectId) {
       return res.status(400).json({
         error: "ProspectID is required",
-        receivedKeys: Object.keys(req.body)
+        receivedKeys: Object.keys(req.body),
+        hint: "Ensure 'Include Data' is checked in LeadSquared Automation"
       });
     }
 
-    // Safely extract fields from Automation payload
-    const student_inquiry = req.body["Student Inquiry"] || "";
-    const enrollment_timeline = req.body["Enrollment Timeline"] || "";
-    const ready_now = req.body["Engagement Readiness"] || "";
-    const free_text = req.body["Last User Message"] || "";
+    // Extract fields from the nested leadData
+    const student_inquiry = leadData["Student Inquiry"] || "";
+    const enrollment_timeline = leadData["Enrollment Timeline"] || "";
+    const ready_now = leadData["Engagement Readiness"] || "";
+    const free_text = leadData["Last User Message"] || "";
 
-    // -----------------------------
     // OpenAI Call
-    // -----------------------------
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
       messages: [
         {
           role: "system",
-          content:
-            "You are an intent classifier. Respond with STRICT valid JSON only. No text outside JSON."
+          content: "You are an intent classifier. Respond with STRICT valid JSON only. No text outside JSON."
         },
         {
           role: "user",
           content: `
-Classify the student intent.
+Classify the student intent based on these inputs:
+- inquiry: ${student_inquiry}
+- timeline: ${enrollment_timeline}
+- readiness: ${ready_now}
+- message: ${free_text}
 
-Inputs:
-- student_inquiry: ${student_inquiry}
-- enrollment_timeline: ${enrollment_timeline}
-- ready_now: ${ready_now}
-- free_text: ${free_text}
-
-Return JSON in this exact structure:
+Return JSON:
 {
   "intent": "schedule | explore | nurture",
   "readiness_score": 0.0,
@@ -103,15 +89,10 @@ Return JSON in this exact structure:
       ]
     });
 
-    const raw = completion.choices[0].message.content.trim();
-    const result = JSON.parse(raw);
+    const result = JSON.parse(completion.choices[0].message.content.trim());
+    const readiness_bucket = result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    const readiness_bucket =
-      result.readiness_score >= 0.75 ? "HIGH" : "LOW";
-
-    // -----------------------------
-    // Update LeadSquared Fields
-    // -----------------------------
+    // Update LeadSquared
     await updateLead(prospectId, {
       "Readiness Bucket": readiness_bucket,
       "AI Readiness Score": result.readiness_score,
@@ -124,21 +105,17 @@ Return JSON in this exact structure:
     return res.json({
       status: "success",
       prospectId,
-      readiness_bucket,
       intent: result.intent
     });
 
   } catch (error) {
-    console.error("Intent classifier error:", error);
+    console.error("Error:", error.message);
     return res.status(500).json({
-      error: "Intent classification failed",
+      error: "Classification failed",
       details: error.message
     });
   }
 });
 
-// -----------------------------
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`AI Intent Classifier running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Running on port ${PORT}`));
