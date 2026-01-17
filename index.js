@@ -1,101 +1,69 @@
 import express from "express";
-import cors from "cors";
-import OpenAI from "openai";
 import fetch from "node-fetch";
 
 const app = express();
-app.use(cors());
 app.use(express.json());
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
-
-async function updateLeadSquaredAsync(prospectId, fields) {
-  const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.UpdateAsync?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
-
-  const payload = [
-    {
-      ProspectID: prospectId,
-      Fields: fields
-    }
-  ];
-
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-
-  const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(text);
-  }
-
-  return text;
-}
+const LS_HOST = "https://api-in21.leadsquared.com"; // us11 cluster
+const ACCESS_KEY = process.env.LS_ACCESS_KEY;
+const SECRET_KEY = process.env.LS_SECRET_KEY;
 
 app.post("/intent-classifier", async (req, res) => {
   try {
+    const data = req.body;
     const prospectId =
-      req.body?.Current?.ProspectID ||
-      req.body?.After?.ProspectID ||
-      req.body?.Before?.ProspectID;
+      data?.Current?.ProspectID ||
+      data?.After?.ProspectID ||
+      data?.Before?.ProspectID;
 
     if (!prospectId) {
-      return res.status(400).json({ error: "ProspectID missing" });
+      return res.status(400).json({ error: "ProspectID not found in webhook" });
     }
 
-    const inquiry = req.body?.Current?.mx_Student_Inquiry || "";
-    const timeline = req.body?.Current?.mx_Enrollment_Timeline || "";
-    const engagement = req.body?.Current?.mx_Engagement_Readiness || "";
+    // ---- MOCK / STATIC AI OUTPUT (replace later) ----
+    const aiResult = {
+      readinessBucket: "HIGH",
+      readinessScore: 0.8,
+      detectedIntent: "MBA",
+      riskCategory: "medium",
+      propensityScore: 75,
+      decisionSummary:
+        "High intent student with Fall 2026 timeline and strong engagement."
+    };
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      temperature: 0.2,
-      messages: [
-        { role: "system", content: "Return ONLY valid JSON." },
-        {
-          role: "user",
-          content: `
-Classify intent.
-
-Inquiry: ${inquiry}
-Timeline: ${timeline}
-Engagement: ${engagement}
-
-Return:
-{
-  "intent": "schedule | explore | nurture",
-  "readiness_score": 0.0,
-  "risk_category": "low | medium | high",
-  "propensity_score": 0,
-  "decision_summary": ""
-}
-`
-        }
-      ]
-    });
-
-    const ai = JSON.parse(completion.choices[0].message.content);
-
-    const readinessBucket = ai.readiness_score >= 0.75 ? "HIGH" : "LOW";
-
-    const fields = [
-      { Attribute: "mx_AI_Detected_Intent", Value: ai.intent },
-      { Attribute: "mx_AI_Readiness_Score", Value: ai.readiness_score },
-      { Attribute: "mx_Readiness_Bucket", Value: readinessBucket },
-      { Attribute: "mx_AI_Risk_Category", Value: ai.risk_category },
-      { Attribute: "mx_AI_Propensity_Score", Value: ai.propensity_score },
-      { Attribute: "mx_Last_AI_Decision", Value: ai.decision_summary }
+    const updatePayload = [
+      {
+        ProspectID: prospectId,
+        mx_Readiness_Bucket: aiResult.readinessBucket,
+        mx_AI_Readiness_Score: aiResult.readinessScore,
+        mx_AI_Detected_Intent: aiResult.detectedIntent,
+        mx_AI_Risk_Category: aiResult.riskCategory,
+        mx_AI_Propensity_Score: aiResult.propensityScore,
+        mx_Last_AI_Decision: aiResult.decisionSummary
+      }
     ];
 
-    await updateLeadSquaredAsync(prospectId, fields);
+    const url = `${LS_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${ACCESS_KEY}&secretKey=${SECRET_KEY}`;
 
-    res.json({ status: "success", prospectId });
+    const lsResponse = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updatePayload)
+    });
+
+    const resultText = await lsResponse.text();
+
+    if (!lsResponse.ok) {
+      throw new Error(`LeadSquared update failed: ${resultText}`);
+    }
+
+    res.json({
+      success: true,
+      prospectId,
+      leadSquaredResponse: resultText
+    });
   } catch (err) {
-    console.error("Intent classifier failed:", err.message);
+    console.error("Intent classifier error:", err.message);
     res.status(500).json({
       error: "Intent classification failed",
       details: err.message
