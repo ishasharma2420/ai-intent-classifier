@@ -7,34 +7,12 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-/**
- * REQUIRED ENV VARIABLES
- * ----------------------
- * OPENAI_API_KEY
- * LSQ_ACCESS_KEY
- * LSQ_SECRET_KEY
- * LSQ_HOST   (example: https://api-in21.leadsquared.com)
- */
-
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
 /**
- * Safely extract ProspectID from LeadSquared Automation payload
- */
-function extractProspectId(body) {
-  return (
-    body?.Current?.ProspectID ||
-    body?.After?.ProspectID ||
-    body?.Before?.ProspectID ||
-    body?.ProspectID || // fallback (Postman/manual)
-    null
-  );
-}
-
-/**
- * Update LeadSquared Prospect
+ * LeadSquared Update Helper
  */
 async function updateLeadSquared(prospectId, payload) {
   const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
@@ -59,41 +37,41 @@ async function updateLeadSquared(prospectId, payload) {
   return text;
 }
 
-/**
- * Intent Classifier Endpoint
- */
 app.post("/intent-classifier", async (req, res) => {
   try {
-    const prospectId = extractProspectId(req.body);
+    /**
+     * ✅ FINAL, CORRECT PROSPECT ID RESOLUTION
+     */
+    const prospectId =
+      req.query?.entityId ||
+      req.body?.ProspectID ||
+      req.body?.After?.ProspectID ||
+      req.body?.Before?.ProspectID ||
+      req.body?.Current?.ProspectID;
 
     if (!prospectId) {
       return res.status(400).json({
-        error: "ProspectID is required",
-        receivedKeys: Object.keys(req.body || {})
+        error: "ProspectID not found",
+        query: req.query,
+        bodyKeys: Object.keys(req.body || {})
       });
     }
 
-    // Pull fields from LeadSquared payload
+    /**
+     * Extract Lead Data
+     */
     const studentInquiry =
-      req.body?.Current?.["Student Inquiry"] ||
-      req.body?.After?.["Student Inquiry"] ||
-      "";
+      req.body?.After?.mx_Student_Inquiry || "";
 
     const enrollmentTimeline =
-      req.body?.Current?.["Enrollment Timeline"] ||
-      req.body?.After?.["Enrollment Timeline"] ||
-      "";
+      req.body?.After?.mx_Enrollment_Timeline || "";
 
     const engagementReadiness =
-      req.body?.Current?.["Engagement Readiness"] ||
-      req.body?.After?.["Engagement Readiness"] ||
-      "";
+      req.body?.After?.mx_Engagement_Readiness || "";
 
-    const freeText =
-      req.body?.Current?.["Last User Message"] ||
-      "";
-
-    // OpenAI Classification
+    /**
+     * OpenAI Classification
+     */
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
@@ -101,22 +79,20 @@ app.post("/intent-classifier", async (req, res) => {
         {
           role: "system",
           content:
-            "You are an intent classifier. Respond with STRICT valid JSON only."
+            "You are an intent classifier. Respond ONLY with valid JSON."
         },
         {
           role: "user",
           content: `
-Classify student intent.
+Classify the student intent.
 
-Inputs:
-- student_inquiry: ${studentInquiry}
-- enrollment_timeline: ${enrollmentTimeline}
-- engagement_readiness: ${engagementReadiness}
-- free_text: ${freeText}
+student_inquiry: ${studentInquiry}
+enrollment_timeline: ${enrollmentTimeline}
+engagement_readiness: ${engagementReadiness}
 
-Return JSON ONLY:
+Return JSON EXACTLY as:
 {
-  "intent": "schedule | explore | nurture",
+  "intent": "ready | explore | nurture",
   "readiness_score": 0.0,
   "risk_category": "low | medium | high",
   "propensity_score": 0,
@@ -127,13 +103,16 @@ Return JSON ONLY:
       ]
     });
 
-    const raw = completion.choices[0].message.content.trim();
-    const result = JSON.parse(raw);
+    const result = JSON.parse(
+      completion.choices[0].message.content.trim()
+    );
 
     const readinessBucket =
       result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    // Update LeadSquared
+    /**
+     * Update LeadSquared
+     */
     await updateLeadSquared(prospectId, {
       "AI Detected Intent": result.intent,
       "AI Readiness Score": result.readiness_score,
@@ -146,14 +125,13 @@ Return JSON ONLY:
     res.json({
       status: "success",
       prospectId,
-      readiness_bucket: readinessBucket,
-      intent: result.intent
+      readinessBucket
     });
-  } catch (error) {
-    console.error("Intent classifier error:", error);
+  } catch (err) {
+    console.error("Intent classifier error:", err);
     res.status(500).json({
       error: "Intent classification failed",
-      details: error.message
+      details: err.message
     });
   }
 });
