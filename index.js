@@ -44,13 +44,19 @@ async function updateLead(leadId, payload) {
 
 app.post("/intent-classifier", async (req, res) => {
   try {
-    const {
-      leadId,
-      student_inquiry = "",
-      enrollment_timeline = "",
-      ready_now = "",
-      free_text = ""
-    } = req.body;
+   const leadId = req.body.LeadId;
+
+const student_inquiry =
+  req.body["Student Inquiry"] || "";
+
+const enrollment_timeline =
+  req.body["Enrollment Timeline"] || "";
+
+const ready_now =
+  req.body["Ready Now"] || "";
+
+const free_text =
+  req.body["Last User Message"] || "";
 
     if (!leadId) {
       return res.status(400).json({ error: "leadId is required" });
