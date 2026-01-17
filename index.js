@@ -1,86 +1,90 @@
 import express from "express";
 import cors from "cors";
 import OpenAI from "openai";
+import fetch from "node-fetch";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 /**
- * REQUIRED ENV VARIABLES (SET ONLY IN RENDER)
- *
+ * ENV VARIABLES REQUIRED (SET IN RENDER, NOT GITHUB)
+ * -----------------------------------------------
  * OPENAI_API_KEY
  * LSQ_ACCESS_KEY
  * LSQ_SECRET_KEY
  * LSQ_HOST   (example: https://api-in21.leadsquared.com)
- * PORT       (optional, Render sets this)
  */
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-/**
- * -----------------------------
- * Helper: Update Lead in LeadSquared
- * -----------------------------
- */
-async function updateLeadInLSQ(leadId, attributes) {
+// -------------------------
+// Helper: Update Lead in LeadSquared
+// -------------------------
+async function updateLead(leadId, payload) {
   const url = `${process.env.LSQ_HOST}/v2/LeadManagement.svc/Lead.Update?accessKey=${process.env.LSQ_ACCESS_KEY}&secretKey=${process.env.LSQ_SECRET_KEY}`;
 
   const body = {
     LeadId: leadId,
-    ...attributes
+    ...payload
   };
 
-  const response = await fetch(url, {
+  const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
 
-  const text = await response.text();
+  const text = await res.text();
 
-  if (!response.ok) {
+  if (!res.ok) {
     throw new Error(`LeadSquared update failed: ${text}`);
   }
 
   return text;
 }
 
-/**
- * -----------------------------
- * Intent Classifier Endpoint
- * -----------------------------
- */
+// -------------------------
+// Intent Classifier Endpoint
+// -------------------------
 app.post("/intent-classifier", async (req, res) => {
   try {
-    /* -----------------------------
-       1. Read LeadSquared payload
-    ------------------------------ */
+    /**
+     * LeadSquared Automation sends:
+     * req.body.Before.ProspectID
+     * req.body.After.ProspectID
+     */
 
-    const leadId = req.body.LeadId;
+    const leadId =
+      req.body?.LeadId ||                       // chatbot / manual API
+      req.body?.ProspectID ||                   // safety
+      req.body?.After?.ProspectID ||            // automation (most common)
+      req.body?.Before?.ProspectID;
 
     if (!leadId) {
-      return res.status(400).json({ error: "LeadId is required" });
+      return res.status(400).json({
+        error: "LeadId (ProspectID) not found in payload"
+      });
     }
 
-    const studentInquiry =
-      req.body["Student Inquiry"] || "";
+    // 🔹 Extract signals safely
+    const student_inquiry =
+      req.body?.After?.["Student Inquiry"] || "";
 
-    const enrollmentTimeline =
-      req.body["Enrollment Timeline"] || "";
+    const enrollment_timeline =
+      req.body?.After?.["Enrollment Timeline"] || "";
 
-    const readyNow =
-      req.body["Ready Now"] || "";
+    const ready_now =
+      req.body?.After?.["Engagement Readiness"] || "";
 
-    const freeText =
-      req.body["Last User Message"] || "";
+    const free_text =
+      req.body?.After?.["Last User Message"] || "";
 
-    /* -----------------------------
-       2. Call OpenAI
-    ------------------------------ */
-
+    // -------------------------
+    // OpenAI Classification
+    // -------------------------
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       temperature: 0.2,
@@ -96,10 +100,10 @@ app.post("/intent-classifier", async (req, res) => {
 Classify the student intent.
 
 Inputs:
-- student_inquiry: ${studentInquiry}
-- enrollment_timeline: ${enrollmentTimeline}
-- ready_now: ${readyNow}
-- free_text: ${freeText}
+- student_inquiry: ${student_inquiry}
+- enrollment_timeline: ${enrollment_timeline}
+- ready_now: ${ready_now}
+- free_text: ${free_text}
 
 Return JSON in this exact structure:
 {
@@ -115,46 +119,29 @@ Return JSON in this exact structure:
     });
 
     const raw = completion.choices[0].message.content.trim();
+    const result = JSON.parse(raw);
 
-    let result;
-    try {
-      result = JSON.parse(raw);
-    } catch (err) {
-      throw new Error("OpenAI returned invalid JSON");
-    }
+    const readiness_bucket =
+      result.readiness_score >= 0.75 ? "HIGH" : "LOW";
 
-    /* -----------------------------
-       3. Derive Readiness Bucket
-    ------------------------------ */
-
-    const readinessBucket =
-      Number(result.readiness_score) >= 0.75 ? "HIGH" : "LOW";
-
-    /* -----------------------------
-       4. Update LeadSquared fields
-       (MATCHING YOUR CRM EXACTLY)
-    ------------------------------ */
-
-    await updateLeadInLSQ(leadId, {
-      "Readiness Bucket": readinessBucket,                 // dropdown (HIGH / LOW)
-      "AI Readiness Score": Number(result.readiness_score),
-      "AI Detected Intent": result.intent,
-      "AI Risk Category": result.risk_category,             // low / medium / high
-      "AI Propensity Score": Number(result.propensity_score),
-      "Last AI Decision": result.decision_summary
+    // -------------------------
+    // Update EXACT CRM fields
+    // -------------------------
+    await updateLead(leadId, {
+      "Readiness Bucket": readiness_bucket,                 // dropdown
+      "AI Readiness Score": result.readiness_score,         // number
+      "AI Detected Intent": result.intent,                  // text
+      "AI Risk Category": result.risk_category,             // dropdown
+      "AI Propensity Score": result.propensity_score,       // number
+      "Last AI Decision": result.decision_summary            // long text
     });
-
-    /* -----------------------------
-       5. Respond to Automation
-    ------------------------------ */
 
     res.json({
       status: "success",
       leadId,
-      readiness_bucket: readinessBucket,
+      readiness_bucket,
       intent: result.intent
     });
-
   } catch (error) {
     console.error("Intent classifier error:", error);
     res.status(500).json({
@@ -164,11 +151,6 @@ Return JSON in this exact structure:
   }
 });
 
-/**
- * -----------------------------
- * Server
- * -----------------------------
- */
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`AI Intent Classifier running on port ${PORT}`);
