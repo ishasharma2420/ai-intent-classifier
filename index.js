@@ -4,7 +4,7 @@ import fetch from "node-fetch";
 const app = express();
 app.use(express.json());
 
-const LS_HOST = "https://api-in21.leadsquared.com"; // us11 cluster
+const LS_HOST = "https://api-us11.leadsquared.com"; // us11 cluster
 const ACCESS_KEY = process.env.LS_ACCESS_KEY;
 const SECRET_KEY = process.env.LS_SECRET_KEY;
 
