@@ -1,61 +1,79 @@
 import express from "express";
-import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
 
-const LS_HOST = "https://api-us11.leadsquared.com";
-const ACCESS_KEY = process.env.LS_ACCESS_KEY;
-const SECRET_KEY = process.env.LS_SECRET_KEY;
+/**
+ * Health check
+ */
+app.get("/", (req, res) => {
+  res.status(200).send("AI Intent Classifier is running");
+});
 
+/**
+ * LeadSquared webhook endpoint
+ */
 app.post("/intent-classifier", async (req, res) => {
   try {
-    const data = req.body;
-    const prospectId =
-      data?.Current?.ProspectID ||
-      data?.After?.ProspectID ||
-      data?.Before?.ProspectID;
+    const payload = req.body || {};
 
-    if (!prospectId) {
-      return res.status(400).json({ error: "ProspectID not found" });
+    // LeadSquared sends data inside Before / After / Current
+    const lead =
+      payload.After ||
+      payload.Current ||
+      payload.Before ||
+      {};
+
+    const studentInquiry =
+      (lead.mx_Student_Inquiry || "").toLowerCase();
+
+    const readiness =
+      (lead.mx_Engagement_Readiness || "").toLowerCase();
+
+    // ---------- SIMPLE DETERMINISTIC CLASSIFICATION ----------
+    let detectedIntent = "Unknown";
+    let readinessBucket = "Low";
+
+    if (
+      studentInquiry.includes("mba") ||
+      studentInquiry.includes("business")
+    ) {
+      detectedIntent = "MBA";
+    } else if (
+      studentInquiry.includes("engineering") ||
+      studentInquiry.includes("tech")
+    ) {
+      detectedIntent = "Engineering";
     }
 
-    const updatePayload = [
-      {
-        ProspectID: prospectId,
-        mx_AI_Detected_Intent: "MBA",
-        mx_AI_Readiness_Score: "High",
-        mx_Engagement_Readiness: "Ready Now",
-        mx_Last_AI_Decision:
-          "High intent student with Fall 2026 enrollment timeline"
+    if (readiness === "ready now") {
+      readinessBucket = "High";
+    } else if (readiness === "just exploring") {
+      readinessBucket = "Medium";
+    }
+
+    // ---------- RESPONSE BACK TO LEADSQUARED ----------
+    // ⚠️ IMPORTANT:
+    // LeadSquared Automation will read this response
+    // and perform the update internally
+    return res.status(200).json({
+      success: true,
+      ai_output: {
+        detected_intent: detectedIntent,
+        readiness_bucket: readinessBucket,
+        confidence: 0.85
       }
-    ];
-
-    const url = `${LS_HOST}/v2/LeadManagement.svc/Lead.UpdateAsync?accessKey=${ACCESS_KEY}&secretKey=${SECRET_KEY}`;
-
-    const lsRes = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(updatePayload)
     });
-
-    const responseText = await lsRes.text();
-
-    if (!lsRes.ok || responseText.includes("Error")) {
-      throw new Error(responseText);
-    }
-
-    res.json({ success: true, prospectId });
   } catch (err) {
-    console.error("Intent classifier error:", err.message);
-    res.status(500).json({
-      error: "Intent classification failed",
-      details: err.message
+    console.error("Intent classifier error:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Intent classification failed"
     });
   }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () =>
-  console.log(`AI Intent Classifier running on port ${PORT}`)
-);
+app.listen(PORT, () => {
+  console.log(`AI Intent Classifier running on port ${PORT}`);
+});
