@@ -3,36 +3,47 @@ import express from "express";
 const app = express();
 app.use(express.json());
 
-app.get("/", (req, res) => {
-  res.status(200).send("AI Lead Readiness Scoring Service is running");
+/* -------------------- HEALTH -------------------- */
+app.get("/", (_, res) => {
+  res.status(200).send("AI Lead Readiness Scoring – FINAL");
 });
 
-/**
- * Normalize helper
- */
-const normalize = (value) =>
-  (value || "")
+/* -------------------- HELPERS -------------------- */
+const normalize = (v) =>
+  (v ?? "")
     .toString()
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
 
-/**
- * Engagement Readiness scoring (chatbot-aligned)
- */
-const ENGAGEMENT_SCORE_MAP = {
+function deepFind(obj, possibleKeys) {
+  if (!obj || typeof obj !== "object") return "";
+
+  for (const key of Object.keys(obj)) {
+    if (possibleKeys.includes(key.toLowerCase())) {
+      const val = obj[key];
+      if (val && val.toString().trim() !== "") return val;
+    }
+    if (typeof obj[key] === "object") {
+      const found = deepFind(obj[key], possibleKeys);
+      if (found) return found;
+    }
+  }
+  return "";
+}
+
+/* -------------------- SCORE MAPS -------------------- */
+const ENGAGEMENT_MAP = {
   "ready to apply": 40,
+  "need fa support": 24,
+  "need financial aid support": 24,
   "questions on admission": 36,
   "need counselling": 30,
   "shortlisting colleges": 26,
-  "need fa support": 24,
   "just exploring options": 16
 };
 
-/**
- * Enrollment Timeline scoring (chatbot-aligned)
- */
-const TIMELINE_SCORE_MAP = {
+const TIMELINE_MAP = {
   "within 30 days": 40,
   "1-3 months": 32,
   "this academic cycle": 28,
@@ -40,27 +51,25 @@ const TIMELINE_SCORE_MAP = {
   "just researching": 10
 };
 
-function matchScore(value, map) {
-  for (const key of Object.keys(map)) {
-    if (value.includes(key)) return map[key];
+function scoreFromMap(value, map) {
+  for (const k of Object.keys(map)) {
+    if (value.includes(k)) return map[k];
   }
   return 0;
 }
 
-/**
- * Inquiry classification
- */
+/* -------------------- INQUIRY CLASSIFIER -------------------- */
 function classifyInquiry(text) {
   if (!text) {
-    return { intent_type: "General inquiry", intent_strength: "Weak" };
+    return { intent: "General inquiry", strength: "Weak" };
   }
 
-  const strong = ["apply", "application", "admission", "asap", "urgent", "enroll"];
-  const medium = ["fees", "fee", "finance", "scholarship", "course", "program"];
+  const strong = ["apply", "application", "asap", "urgent", "enroll"];
+  const medium = ["fee", "fees", "finance", "scholarship", "course", "program"];
 
   let strength = "Weak";
-  if (strong.some(k => text.includes(k))) strength = "Strong";
-  else if (medium.some(k => text.includes(k))) strength = "Medium";
+  if (strong.some((k) => text.includes(k))) strength = "Strong";
+  else if (medium.some((k) => text.includes(k))) strength = "Medium";
 
   let intent = "General inquiry";
   if (text.includes("mba")) intent = "MBA admissions";
@@ -71,7 +80,7 @@ function classifyInquiry(text) {
   else if (text.includes("fee") || text.includes("finance"))
     intent = "Financial aid";
 
-  return { intent_type: intent, intent_strength: strength };
+  return { intent, strength };
 }
 
 function intentScore(strength) {
@@ -80,74 +89,68 @@ function intentScore(strength) {
   return 6;
 }
 
-/**
- * Webhook
- */
-app.post("/intent-classifier", async (req, res) => {
+/* -------------------- WEBHOOK -------------------- */
+app.post("/intent-classifier", (req, res) => {
   try {
     const payload = req.body || {};
 
-    /**
-     * 🔑 SUPPORT BOTH UDS (flat) AND LS Automation (nested)
-     */
-    const lead =
-      payload.student_inquiry
-        ? payload
-        : payload.After || payload.Current || payload.Before || {};
-
+    /* 🔥 DEEP EXTRACTION – NO ASSUMPTIONS */
     const inquiry = normalize(
-      lead.student_inquiry || lead.mx_Student_Inquiry
+      deepFind(payload, ["student_inquiry", "mx_student_inquiry"])
     );
 
     const engagement = normalize(
-      lead.engagement_readiness || lead.mx_Engagement_Readiness
+      deepFind(payload, ["engagement_readiness", "mx_engagement_readiness"])
     );
 
     const timeline = normalize(
-      lead.enrollment_timeline || lead.mx_Enrollment_Timeline
+      deepFind(payload, ["enrollment_timeline", "mx_enrollment_timeline"])
     );
 
-    const engagementScore = matchScore(engagement, ENGAGEMENT_SCORE_MAP);
-    const timelineScore = matchScore(timeline, TIMELINE_SCORE_MAP);
+    /* -------------------- SCORING -------------------- */
+    const engagementScore = scoreFromMap(engagement, ENGAGEMENT_MAP);
+    const timelineScore = scoreFromMap(timeline, TIMELINE_MAP);
 
     const inquiryResult = classifyInquiry(inquiry);
-    const inquiryScore = intentScore(inquiryResult.intent_strength);
+    const inquiryScore = intentScore(inquiryResult.strength);
 
-    let readinessScore =
+    let totalScore =
       engagementScore + timelineScore + inquiryScore;
 
-    /**
-     * Safety floor: strong signals cannot be Low
-     */
+    /* 🔒 BUSINESS OVERRIDE – NON-NEGOTIABLE */
     if (
-      readinessScore < 40 &&
-      (engagementScore >= 30 || timelineScore >= 30)
+      totalScore < 40 &&
+      (engagement.includes("fa") ||
+        engagement.includes("ready") ||
+        timeline.includes("30"))
     ) {
-      readinessScore = 70;
+      totalScore = 75;
     }
 
-    let readinessBucket = "Low";
-    if (readinessScore >= 70) readinessBucket = "High";
+    const bucket = totalScore >= 70 ? "High" : "Low";
 
     return res.status(200).json({
       success: true,
-      scoring_version: "v1.4-uds-payload-aware",
+      scoring_version: "vFINAL-no-more-guessing",
       ai_output: {
-        detected_intent: inquiryResult.intent_type,
-        readiness_score: readinessScore,
-        readiness_bucket: readinessBucket
+        detected_intent: inquiryResult.intent,
+        readiness_score: totalScore,
+        readiness_bucket: bucket
+      },
+      debug_final_inputs: {
+        inquiry,
+        engagement,
+        timeline
       }
     });
-  } catch (err) {
-    console.error("Lead readiness scoring error:", err);
-    return res.status(500).json({
-      success: false,
-      error: "Lead readiness scoring failed"
-    });
+  } catch (e) {
+    console.error(e);
+    return res.status(500).json({ success: false });
   }
 });
 
+/* -------------------- START -------------------- */
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
-  console.log(`AI Lead Readiness Scoring Service running on port ${PORT}`);
-});
+app.listen(PORT, () =>
+  console.log(`AI Lead Readiness Scoring running on ${PORT}`)
+);
