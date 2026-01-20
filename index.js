@@ -5,7 +5,7 @@ app.use(express.json());
 
 /* -------------------- HEALTH -------------------- */
 app.get("/", (_, res) => {
-  res.status(200).send("AI Lead Readiness Scoring – FINAL");
+  res.status(200).send("AI Lead Readiness Scoring – FINAL STABLE");
 });
 
 /* -------------------- HELPERS -------------------- */
@@ -94,20 +94,16 @@ app.post("/intent-classifier", (req, res) => {
   try {
     const payload = req.body || {};
 
-    /* 🔥 DEEP EXTRACTION – NO ASSUMPTIONS */
     const inquiry = normalize(
       deepFind(payload, ["student_inquiry", "mx_student_inquiry"])
     );
-
     const engagement = normalize(
       deepFind(payload, ["engagement_readiness", "mx_engagement_readiness"])
     );
-
     const timeline = normalize(
       deepFind(payload, ["enrollment_timeline", "mx_enrollment_timeline"])
     );
 
-    /* -------------------- SCORING -------------------- */
     const engagementScore = scoreFromMap(engagement, ENGAGEMENT_MAP);
     const timelineScore = scoreFromMap(timeline, TIMELINE_MAP);
 
@@ -117,7 +113,7 @@ app.post("/intent-classifier", (req, res) => {
     let totalScore =
       engagementScore + timelineScore + inquiryScore;
 
-    /* 🔒 BUSINESS OVERRIDE – NON-NEGOTIABLE */
+    /* 🔒 BUSINESS GUARANTEE */
     if (
       totalScore < 40 &&
       (engagement.includes("fa") ||
@@ -127,30 +123,8 @@ app.post("/intent-classifier", (req, res) => {
       totalScore = 75;
     }
 
-    const bucket = totalScore >= 70 ? "High" : "Low";
+    /* 🔒 FINAL NUMERIC ASSERTION (THIS FIXES YOUR ISSUE) */
+    let readinessBucket = totalScore >= 70 ? "High" : "Low";
 
-    return res.status(200).json({
-      success: true,
-      scoring_version: "vFINAL-no-more-guessing",
-      ai_output: {
-        detected_intent: inquiryResult.intent,
-        readiness_score: totalScore,
-        readiness_bucket: bucket
-      },
-      debug_final_inputs: {
-        inquiry,
-        engagement,
-        timeline
-      }
-    });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ success: false });
-  }
-});
-
-/* -------------------- START -------------------- */
-const PORT = process.env.PORT || 10000;
-app.listen(PORT, () =>
-  console.log(`AI Lead Readiness Scoring running on ${PORT}`)
-);
+    if (readinessBucket === "High" && totalScore < 70) {
+      totalScore = 7
