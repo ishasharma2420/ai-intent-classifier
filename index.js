@@ -3,37 +3,22 @@ import express from "express";
 const app = express();
 app.use(express.json());
 
-/* -------------------- HEALTH -------------------- */
-app.get("/", (_, res) => {
-  res.status(200).send("AI Lead Readiness Scoring – FINAL STABLE");
+/* -------------------- HEALTH CHECK -------------------- */
+app.get("/", (req, res) => {
+  res.status(200).send("AI Lead Readiness Scoring Service running");
 });
 
 /* -------------------- HELPERS -------------------- */
-const normalize = (v) =>
-  (v ?? "")
+function normalize(value) {
+  return (value || "")
     .toString()
     .trim()
     .toLowerCase()
     .replace(/\s+/g, " ");
-
-function deepFind(obj, possibleKeys) {
-  if (!obj || typeof obj !== "object") return "";
-
-  for (const key of Object.keys(obj)) {
-    if (possibleKeys.includes(key.toLowerCase())) {
-      const val = obj[key];
-      if (val && val.toString().trim() !== "") return val;
-    }
-    if (typeof obj[key] === "object") {
-      const found = deepFind(obj[key], possibleKeys);
-      if (found) return found;
-    }
-  }
-  return "";
 }
 
 /* -------------------- SCORE MAPS -------------------- */
-const ENGAGEMENT_MAP = {
+const ENGAGEMENT_SCORE_MAP = {
   "ready to apply": 40,
   "need fa support": 24,
   "need financial aid support": 24,
@@ -43,7 +28,7 @@ const ENGAGEMENT_MAP = {
   "just exploring options": 16
 };
 
-const TIMELINE_MAP = {
+const TIMELINE_SCORE_MAP = {
   "within 30 days": 40,
   "1-3 months": 32,
   "this academic cycle": 28,
@@ -51,39 +36,45 @@ const TIMELINE_MAP = {
   "just researching": 10
 };
 
-function scoreFromMap(value, map) {
-  for (const k of Object.keys(map)) {
-    if (value.includes(k)) return map[k];
+function mapScore(value, map) {
+  for (const key in map) {
+    if (value.includes(key)) return map[key];
   }
   return 0;
 }
 
 /* -------------------- INQUIRY CLASSIFIER -------------------- */
 function classifyInquiry(text) {
+  let intent = "General inquiry";
+  let strength = "Weak";
+
   if (!text) {
-    return { intent: "General inquiry", strength: "Weak" };
+    return { intent, strength };
   }
 
-  const strong = ["apply", "application", "asap", "urgent", "enroll"];
-  const medium = ["fee", "fees", "finance", "scholarship", "course", "program"];
+  const strongSignals = ["apply", "application", "urgent", "asap", "enroll"];
+  const mediumSignals = ["fee", "fees", "finance", "scholarship", "course", "program"];
 
-  let strength = "Weak";
-  if (strong.some((k) => text.includes(k))) strength = "Strong";
-  else if (medium.some((k) => text.includes(k))) strength = "Medium";
+  if (strongSignals.some(k => text.includes(k))) {
+    strength = "Strong";
+  } else if (mediumSignals.some(k => text.includes(k))) {
+    strength = "Medium";
+  }
 
-  let intent = "General inquiry";
-  if (text.includes("mba")) intent = "MBA admissions";
-  else if (text.includes("msc") || text.includes("psychology"))
+  if (text.includes("mba")) {
+    intent = "MBA admissions";
+  } else if (text.includes("msc") || text.includes("psychology")) {
     intent = "Postgraduate admissions";
-  else if (text.includes("engineering") || text.includes("btech"))
+  } else if (text.includes("engineering") || text.includes("btech")) {
     intent = "Engineering admissions";
-  else if (text.includes("fee") || text.includes("finance"))
+  } else if (text.includes("fee") || text.includes("finance")) {
     intent = "Financial aid";
+  }
 
   return { intent, strength };
 }
 
-function intentScore(strength) {
+function intentStrengthScore(strength) {
   if (strength === "Strong") return 20;
   if (strength === "Medium") return 12;
   return 6;
@@ -94,37 +85,48 @@ app.post("/intent-classifier", (req, res) => {
   try {
     const payload = req.body || {};
 
-    const inquiry = normalize(
-      deepFind(payload, ["student_inquiry", "mx_student_inquiry"])
-    );
-    const engagement = normalize(
-      deepFind(payload, ["engagement_readiness", "mx_engagement_readiness"])
-    );
-    const timeline = normalize(
-      deepFind(payload, ["enrollment_timeline", "mx_enrollment_timeline"])
-    );
+    // UDS flat payload (confirmed from your logs)
+    const inquiry = normalize(payload.student_inquiry);
+    const engagement = normalize(payload.engagement_readiness);
+    const timeline = normalize(payload.enrollment_timeline);
 
-    const engagementScore = scoreFromMap(engagement, ENGAGEMENT_MAP);
-    const timelineScore = scoreFromMap(timeline, TIMELINE_MAP);
+    const engagementScore = mapScore(engagement, ENGAGEMENT_SCORE_MAP);
+    const timelineScore = mapScore(timeline, TIMELINE_SCORE_MAP);
 
     const inquiryResult = classifyInquiry(inquiry);
-    const inquiryScore = intentScore(inquiryResult.strength);
+    const inquiryScore = intentStrengthScore(inquiryResult.strength);
 
-    let totalScore =
-      engagementScore + timelineScore + inquiryScore;
+    let readinessScore = engagementScore + timelineScore + inquiryScore;
 
-    /* 🔒 BUSINESS GUARANTEE */
+    // Hard business rule: strong signals must not be Low / 0
     if (
-      totalScore < 40 &&
-      (engagement.includes("fa") ||
-        engagement.includes("ready") ||
-        timeline.includes("30"))
+      readinessScore < 40 &&
+      (timeline.includes("30") || engagement.includes("fa") || engagement.includes("ready"))
     ) {
-      totalScore = 75;
+      readinessScore = 75;
     }
 
-    /* 🔒 FINAL NUMERIC ASSERTION (THIS FIXES YOUR ISSUE) */
-    let readinessBucket = totalScore >= 70 ? "High" : "Low";
+    const readinessBucket = readinessScore >= 70 ? "High" : "Low";
 
-    if (readinessBucket === "High" && totalScore < 70) {
-      totalScore = 7
+    return res.status(200).json({
+      success: true,
+      ai_output: {
+        detected_intent: inquiryResult.intent,
+        readiness_score: readinessScore,
+        readiness_bucket: readinessBucket
+      }
+    });
+  } catch (err) {
+    console.error("Scoring error:", err);
+    return res.status(500).json({
+      success: false,
+      error: "Lead readiness scoring failed"
+    });
+  }
+});
+
+/* -------------------- START SERVER -------------------- */
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
