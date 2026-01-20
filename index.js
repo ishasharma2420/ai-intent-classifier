@@ -11,115 +11,127 @@ app.get("/", (req, res) => {
 });
 
 /**
- * Utility: normalize string safely
+ * Normalize helper
+ * Handles casing, spacing, CRM quirks
  */
 const normalize = (value) =>
-  (value || "").toString().trim().toLowerCase();
+  (value || "")
+    .toString()
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
 
 /**
- * Deterministic score maps
+ * Engagement Readiness – EXACT chatbot values
+ * Weight: 40
  */
 const ENGAGEMENT_SCORE_MAP = {
   "ready to apply": 40,
-  "need help with admissions process": 36,
-  "shortlisting colleges": 30,
-  "needs counselling guidance": 26,
-  "needs financial aid support": 24,
+  "questions on admission": 36,
+  "need counselling": 30,
+  "shortlisting colleges": 26,
+  "need fa support": 24,
   "just exploring options": 16
 };
 
+/**
+ * Enrollment Timeline – EXACT chatbot values
+ * Weight: 40
+ */
 const TIMELINE_SCORE_MAP = {
   "within 30 days": 40,
-  "ready to apply": 40,
-  "within 1-3 months": 32,
+  "1-3 months": 32,
   "this academic cycle": 28,
   "next year": 20,
   "just researching": 10
 };
 
 /**
- * Keyword-based intent + strength detection
+ * Safe fuzzy matcher for dropdown text fields
+ */
+function getMappedScore(value, scoreMap) {
+  for (const key of Object.keys(scoreMap)) {
+    if (value.includes(key)) {
+      return scoreMap[key];
+    }
+  }
+  return 0;
+}
+
+/**
+ * Inquiry intent + strength classification
+ * Weight: 20
  */
 function classifyInquiry(text) {
   if (!text) {
     return {
-      intent_type: "General Inquiry",
-      intent_strength: "Unknown"
+      intent_type: "General inquiry",
+      intent_strength: "Weak"
     };
   }
 
-  const strongKeywords = [
+  const strongSignals = [
     "apply",
     "application",
     "admission",
-    "enroll",
-    "enrollment",
-    "deadline",
     "asap",
-    "counselling"
+    "enroll",
+    "deadline"
   ];
 
-  const mediumKeywords = [
-    "eligibility",
+  const mediumSignals = [
     "fees",
+    "fee",
     "finance",
     "scholarship",
-    "colleges",
-    "program",
-    "course"
+    "course",
+    "program"
   ];
 
-  let intentStrength = "Weak";
+  let strength = "Weak";
 
-  if (strongKeywords.some((k) => text.includes(k))) {
-    intentStrength = "Strong";
-  } else if (mediumKeywords.some((k) => text.includes(k))) {
-    intentStrength = "Medium";
+  if (strongSignals.some(k => text.includes(k))) {
+    strength = "Strong";
+  } else if (mediumSignals.some(k => text.includes(k))) {
+    strength = "Medium";
   }
 
-  let intentType = "General Inquiry";
+  let intent = "General inquiry";
 
   if (text.includes("mba") || text.includes("business")) {
-    intentType = "MBA Admissions";
+    intent = "MBA admissions";
   } else if (
     text.includes("engineering") ||
     text.includes("btech") ||
     text.includes("tech")
   ) {
-    intentType = "Engineering Admissions";
+    intent = "Engineering admissions";
   } else if (
     text.includes("fee") ||
     text.includes("finance") ||
     text.includes("scholarship")
   ) {
-    intentType = "Financial Aid";
+    intent = "Financial aid";
   } else if (
     text.includes("counselling") ||
-    text.includes("guidance")
+    text.includes("counseling")
   ) {
-    intentType = "Counselling";
+    intent = "Counselling";
   }
 
   return {
-    intent_type: intentType,
-    intent_strength: intentStrength
+    intent_type: intent,
+    intent_strength: strength
   };
 }
 
 /**
- * Map intent strength to score
+ * Intent strength → numeric score
  */
-function mapIntentStrengthToScore(strength) {
-  switch (strength) {
-    case "Strong":
-      return 20;
-    case "Medium":
-      return 12;
-    case "Weak":
-      return 6;
-    default:
-      return 0;
-  }
+function intentStrengthScore(strength) {
+  if (strength === "Strong") return 20;
+  if (strength === "Medium") return 12;
+  return 6;
 }
 
 /**
@@ -128,61 +140,57 @@ function mapIntentStrengthToScore(strength) {
 app.post("/intent-classifier", async (req, res) => {
   try {
     const payload = req.body || {};
-
     const lead =
       payload.After ||
       payload.Current ||
       payload.Before ||
       {};
 
-    const studentInquiry = normalize(lead.mx_Student_Inquiry);
-    const engagementReadiness = normalize(
-      lead.mx_Engagement_Readiness
+    const inquiry = normalize(lead.mx_Student_Inquiry);
+    const engagement = normalize(lead.mx_Engagement_Readiness);
+    const timeline = normalize(lead.mx_Enrollment_Timeline);
+
+    const engagementScore = getMappedScore(
+      engagement,
+      ENGAGEMENT_SCORE_MAP
     );
-    const enrollmentTimeline = normalize(
-      lead.mx_Enrollment_Timeline
+
+    const timelineScore = getMappedScore(
+      timeline,
+      TIMELINE_SCORE_MAP
     );
 
-    // ---------- SCORING ----------
-    const engagementScore =
-      ENGAGEMENT_SCORE_MAP[engagementReadiness] || 0;
+    const inquiryResult = classifyInquiry(inquiry);
+    const inquiryScore = intentStrengthScore(
+      inquiryResult.intent_strength
+    );
 
-    const timelineScore =
-      TIMELINE_SCORE_MAP[enrollmentTimeline] || 0;
-
-    const inquiryClassification =
-      classifyInquiry(studentInquiry);
-
-    const inquiryScore =
-      mapIntentStrengthToScore(
-        inquiryClassification.intent_strength
-      );
-
-    const readinessScore =
+    let readinessScore =
       engagementScore + timelineScore + inquiryScore;
 
-    // ---------- BUCKETING ----------
-    let readinessBucket = "Low";
-
-    if (readinessScore >= 70) {
-      readinessBucket = "High";
-    } else if (readinessScore >= 40) {
-      readinessBucket = "Medium";
+    /**
+     * HARD GUARANTEE:
+     * Strong dropdowns can NEVER result in Low / 0
+     */
+    if (
+      readinessScore < 40 &&
+      (engagementScore >= 30 || timelineScore >= 30)
+    ) {
+      readinessScore = 60;
     }
 
-    // ---------- RESPONSE ----------
+    let readinessBucket = "Low";
+    if (readinessScore >= 70) {
+      readinessBucket = "High";
+    }
+
     return res.status(200).json({
       success: true,
-      scoring_version: "v1.0-hybrid-deterministic",
+      scoring_version: "v1.2-chatbot-aligned",
       ai_output: {
-        detected_intent: inquiryClassification.intent_type,
+        detected_intent: inquiryResult.intent_type,
         readiness_score: readinessScore,
-        readiness_bucket: readinessBucket,
-        scoring_breakdown: {
-          engagement_score: engagementScore,
-          timeline_score: timelineScore,
-          inquiry_score: inquiryScore
-        }
+        readiness_bucket: readinessBucket
       }
     });
   } catch (err) {
