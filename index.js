@@ -18,19 +18,7 @@ const normalize = (value) =>
     .replace(/\s+/g, " ");
 
 /**
- * Safely extract value from multiple possible LS keys
- */
-function pickValue(lead, keys) {
-  for (const key of keys) {
-    if (lead[key] && lead[key].toString().trim() !== "") {
-      return lead[key];
-    }
-  }
-  return "";
-}
-
-/**
- * EXACT chatbot-aligned score maps
+ * Engagement Readiness scoring (chatbot-aligned)
  */
 const ENGAGEMENT_SCORE_MAP = {
   "ready to apply": 40,
@@ -41,6 +29,9 @@ const ENGAGEMENT_SCORE_MAP = {
   "just exploring options": 16
 };
 
+/**
+ * Enrollment Timeline scoring (chatbot-aligned)
+ */
 const TIMELINE_SCORE_MAP = {
   "within 30 days": 40,
   "1-3 months": 32,
@@ -64,7 +55,7 @@ function classifyInquiry(text) {
     return { intent_type: "General inquiry", intent_strength: "Weak" };
   }
 
-  const strong = ["apply", "application", "admission", "asap", "enroll"];
+  const strong = ["apply", "application", "admission", "asap", "urgent", "enroll"];
   const medium = ["fees", "fee", "finance", "scholarship", "course", "program"];
 
   let strength = "Weak";
@@ -73,7 +64,7 @@ function classifyInquiry(text) {
 
   let intent = "General inquiry";
   if (text.includes("mba")) intent = "MBA admissions";
-  else if (text.includes("msc") || text.includes("biology"))
+  else if (text.includes("msc") || text.includes("psychology"))
     intent = "Postgraduate admissions";
   else if (text.includes("engineering") || text.includes("btech"))
     intent = "Engineering admissions";
@@ -95,39 +86,26 @@ function intentScore(strength) {
 app.post("/intent-classifier", async (req, res) => {
   try {
     const payload = req.body || {};
-    const lead =
-      payload.After ||
-      payload.Current ||
-      payload.Before ||
-      {};
 
     /**
-     * 🔑 MULTI-KEY EXTRACTION (THIS IS THE REAL FIX)
+     * 🔑 SUPPORT BOTH UDS (flat) AND LS Automation (nested)
      */
-    const inquiryRaw = pickValue(lead, [
-      "mx_Student_Inquiry",
-      "Student Inquiry",
-      "Student_Inquiry",
-      "mx_StudentInquiry"
-    ]);
+    const lead =
+      payload.student_inquiry
+        ? payload
+        : payload.After || payload.Current || payload.Before || {};
 
-    const engagementRaw = pickValue(lead, [
-      "mx_Engagement_Readiness",
-      "Engagement Readiness",
-      "Engagement_Readiness",
-      "mx_EngagementReadiness"
-    ]);
+    const inquiry = normalize(
+      lead.student_inquiry || lead.mx_Student_Inquiry
+    );
 
-    const timelineRaw = pickValue(lead, [
-      "mx_Enrollment_Timeline",
-      "Enrollment Timeline",
-      "Enrollment_Timeline",
-      "mx_EnrollmentTimeline"
-    ]);
+    const engagement = normalize(
+      lead.engagement_readiness || lead.mx_Engagement_Readiness
+    );
 
-    const inquiry = normalize(inquiryRaw);
-    const engagement = normalize(engagementRaw);
-    const timeline = normalize(timelineRaw);
+    const timeline = normalize(
+      lead.enrollment_timeline || lead.mx_Enrollment_Timeline
+    );
 
     const engagementScore = matchScore(engagement, ENGAGEMENT_SCORE_MAP);
     const timelineScore = matchScore(timeline, TIMELINE_SCORE_MAP);
@@ -135,40 +113,33 @@ app.post("/intent-classifier", async (req, res) => {
     const inquiryResult = classifyInquiry(inquiry);
     const inquiryScore = intentScore(inquiryResult.intent_strength);
 
-    let totalScore = engagementScore + timelineScore + inquiryScore;
+    let readinessScore =
+      engagementScore + timelineScore + inquiryScore;
 
     /**
-     * HARD SAFETY FLOOR
+     * Safety floor: strong signals cannot be Low
      */
     if (
-      totalScore === 0 &&
-      (engagement.includes("ready") || timeline.includes("30"))
+      readinessScore < 40 &&
+      (engagementScore >= 30 || timelineScore >= 30)
     ) {
-      totalScore = 70;
+      readinessScore = 70;
     }
 
-    let bucket = "Low";
-    if (totalScore >= 70) bucket = "High";
+    let readinessBucket = "Low";
+    if (readinessScore >= 70) readinessBucket = "High";
 
-    /**
-     * 🔍 ECHO BACK WHAT RENDER ACTUALLY RECEIVED
-     */
     return res.status(200).json({
       success: true,
-      scoring_version: "v1.3-payload-proof",
+      scoring_version: "v1.4-uds-payload-aware",
       ai_output: {
         detected_intent: inquiryResult.intent_type,
-        readiness_score: totalScore,
-        readiness_bucket: bucket
-      },
-      debug_received_values: {
-        inquiry_raw: inquiryRaw,
-        engagement_raw: engagementRaw,
-        timeline_raw: timelineRaw
+        readiness_score: readinessScore,
+        readiness_bucket: readinessBucket
       }
     });
   } catch (err) {
-    console.error("Scoring error:", err);
+    console.error("Lead readiness scoring error:", err);
     return res.status(500).json({
       success: false,
       error: "Lead readiness scoring failed"
