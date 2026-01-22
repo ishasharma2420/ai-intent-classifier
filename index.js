@@ -4,7 +4,7 @@ const app = express();
 app.use(express.json());
 
 app.get("/", (_, res) => {
-  res.status(200).send("AI Lead Readiness Scoring Service – Stable");
+  res.status(200).send("AI Lead Readiness Scoring – Hardened");
 });
 
 /* -------------------- HELPERS -------------------- */
@@ -16,7 +16,11 @@ function normalize(value) {
     .replace(/\s+/g, " ");
 }
 
-/* -------------------- SCORE MAPS (UNCHANGED) -------------------- */
+function isEmpty(value) {
+  return !value || value.trim() === "";
+}
+
+/* -------------------- SCORE MAPS -------------------- */
 const ENGAGEMENT_SCORE_MAP = {
   "ready to apply": 40,
   "need fa support": 24,
@@ -42,84 +46,33 @@ function mapScore(value, map) {
   return 0;
 }
 
-/* -------------------- INTENT LOGIC (NEW, EXPANDED) -------------------- */
-
-const PROGRAM_KEYWORDS = [
-  { keywords: ["mba", "business administration"], label: "MBA" },
-  { keywords: ["business", "management", "accounting", "finance"], label: "Business" },
-  { keywords: ["architecture"], label: "Architecture" },
-  { keywords: ["biology", "biotech", "life science"], label: "Biology" },
-  { keywords: ["art", "design", "fashion", "visual"], label: "Art & Design" },
-  { keywords: ["cosmetology", "beauty", "aesthetics"], label: "Cosmetology" },
-  { keywords: ["criminal justice", "criminology"], label: "Criminal Justice" },
-  { keywords: ["international relations", "global studies"], label: "International Relations" }
-];
-
-const LEVEL_KEYWORDS = [
-  { keywords: ["bachelor", "undergraduate", "ug"], label: "Undergraduate" },
-  { keywords: ["master", "msc", "ma", "postgraduate", "pg"], label: "Postgraduate" }
-];
-
-const INQUIRY_THEMES = [
-  { keywords: ["scholarship", "funding", "financial aid"], label: "Scholarships" },
-  { keywords: ["fee", "fees", "tuition", "cost"], label: "Fees" },
-  { keywords: ["eligibility", "eligible", "requirements"], label: "Eligibility" },
-  { keywords: ["apply", "application", "admission", "deadline", "asap", "urgent"], label: "Admissions" }
-];
-
+/* -------------------- INTENT LOGIC -------------------- */
 function classifyIntent(text) {
   if (!text) {
     return { intent: "General inquiry", strength: "Weak" };
   }
 
-  let program = null;
-  let level = null;
-  let theme = null;
+  const strongSignals = ["apply", "application", "urgent", "asap", "deadline"];
+  const mediumSignals = ["fee", "fees", "finance", "scholarship", "eligibility"];
 
-  for (const p of PROGRAM_KEYWORDS) {
-    if (p.keywords.some(k => text.includes(k))) {
-      program = p.label;
-      break;
-    }
-  }
-
-  for (const l of LEVEL_KEYWORDS) {
-    if (l.keywords.some(k => text.includes(k))) {
-      level = l.label;
-      break;
-    }
-  }
-
-  for (const t of INQUIRY_THEMES) {
-    if (t.keywords.some(k => text.includes(k))) {
-      theme = t.label;
-      break;
-    }
-  }
-
-  // Intent strength
   let strength = "Weak";
-  if (["apply", "application", "admission", "urgent", "asap"].some(k => text.includes(k))) {
+  if (strongSignals.some(k => text.includes(k))) {
     strength = "Strong";
-  } else if (theme) {
+  } else if (mediumSignals.some(k => text.includes(k))) {
     strength = "Medium";
   }
 
-  // Compose intent label
-  let intentParts = [];
-  if (level) intentParts.push(level);
-  if (program) intentParts.push(program);
-  if (theme) intentParts.push(theme);
-
-  const intent =
-    intentParts.length > 0
-      ? intentParts.join(" – ")
-      : "General inquiry";
+  let intent = "General inquiry";
+  if (text.includes("mba")) intent = "MBA – Admissions";
+  else if (text.includes("international relations")) intent = "Postgraduate – International Relations";
+  else if (text.includes("criminal justice")) intent = "Postgraduate – Criminal Justice";
+  else if (text.includes("masters") || text.includes("ma") || text.includes("msc"))
+    intent = "Postgraduate – Admissions";
 
   return { intent, strength };
 }
 
-function intentStrengthScore(strength) {
+function intentScore(strength) {
   if (strength === "Strong") return 20;
   if (strength === "Medium") return 12;
   return 6;
@@ -130,22 +83,45 @@ app.post("/intent-classifier", (req, res) => {
   try {
     const payload = req.body || {};
 
-    const inquiry = normalize(payload.student_inquiry);
-    const engagement = normalize(payload.engagement_readiness);
-    const timeline = normalize(payload.enrollment_timeline);
+    const inquiryRaw = payload.student_inquiry;
+    const timelineRaw = payload.enrollment_timeline;
+    const engagementRaw = payload.engagement_readiness;
 
+    const inquiry = normalize(inquiryRaw);
+    const timeline = normalize(timelineRaw);
+    const engagement = normalize(engagementRaw);
+
+    const missingInputs =
+      isEmpty(inquiryRaw) ||
+      isEmpty(timelineRaw) ||
+      isEmpty(engagementRaw);
+
+    /* -------------------- SAFETY NET -------------------- */
+    if (missingInputs) {
+      return res.status(200).json({
+        success: true,
+        ai_output: {
+          detected_intent: "Postgraduate – Admissions",
+          readiness_score: 75,
+          readiness_bucket: "High",
+          reason: "Fallback applied due to incomplete payload from UDS"
+        }
+      });
+    }
+
+    /* -------------------- NORMAL SCORING -------------------- */
     const engagementScore = mapScore(engagement, ENGAGEMENT_SCORE_MAP);
     const timelineScore = mapScore(timeline, TIMELINE_SCORE_MAP);
 
     const intentResult = classifyIntent(inquiry);
-    const inquiryScore = intentStrengthScore(intentResult.strength);
+    const inquiryScore = intentScore(intentResult.strength);
 
-    let readinessScore = engagementScore + timelineScore + inquiryScore;
+    let readinessScore =
+      engagementScore + timelineScore + inquiryScore;
 
-    // Safety rule
     if (
       readinessScore < 40 &&
-      (timeline.includes("30") || engagement.includes("ready") || engagement.includes("fa"))
+      (timeline.includes("30") || engagement.includes("ready"))
     ) {
       readinessScore = 75;
     }
