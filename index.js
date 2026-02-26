@@ -148,7 +148,7 @@ function generateReasoning({
   }[rawTimeline] || rawTimeline;
 
   const intentSentence = generalInquiry && generalInquiry.length > 3
-    ? `The student's own words — "${generalInquiry}" — indicate a ${inquiryType.toLowerCase()}, which ${adjustment > 0 ? `added ${adjustment} points` : adjustment < 0 ? `reduced the score by ${Math.abs(adjustment)} points` : "did not change the score"}.`
+    ? `The student indicated: ${generalInquiry.replace(/[{}"]/g, "'")}. This was classified as a ${inquiryType.toLowerCase()}, which ${adjustment > 0 ? 'added ' + adjustment + ' points' : adjustment < 0 ? 'reduced the score by ' + Math.abs(adjustment) + ' points' : 'did not change the score'}.`
     : `No free-text inquiry was provided, so intent was inferred from structured inputs alone.`;
 
   const bucketExplanation = bucket === "High"
@@ -159,13 +159,16 @@ function generateReasoning({
     ? `The student has expressed interest in ${programInterest}.`
     : "";
 
-  return [
-    `Agent Flash assessed this lead based on two structured signals: their stated need ("${rawReadiness}") and enrollment timeline ("${rawTimeline}").`,
-    `This combination produced a base score of ${baseScore}/100 — reflecting a ${urgencyLabel} intent window for a student who selected "${rawReadiness}".`,
+  const parts = [
+    `Agent Flash assessed this lead based on two structured signals: their stated need (${rawReadiness}) and enrollment timeline (${rawTimeline}).`,
+    `This combination produced a base score of ${baseScore}/100 - reflecting a ${urgencyLabel} intent window for a student who selected ${rawReadiness}.`,
     intentSentence,
     programNote,
     bucketExplanation,
   ].filter(Boolean).join(" ");
+
+  // Strip any characters that LS mail merge might try to parse as template tags
+  return parts.replace(/[{}"]/g, match => match === '"' ? "'" : "");
 }
 
 /* ---------- MAIN API ENDPOINT ---------- */
