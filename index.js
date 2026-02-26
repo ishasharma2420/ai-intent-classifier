@@ -4,13 +4,13 @@ const app = express();
 app.use(express.json({ limit: "100kb" }));
 
 app.get("/", (_, res) => {
-  res.send("Agent Flash â€“ AI Lead Readiness Scoring");
+  res.send("Agent Flash – AI Lead Readiness Scoring");
 });
 
 /* ---------- NORMALIZATION ---------- */
 const norm = v => (v || "").toLowerCase().replace(/\s+/g, " ").trim();
 
-/* ---------- MAP ACTUAL LS FIELD VALUES â†’ SCORING KEYS ----------
+/* ---------- MAP ACTUAL LS FIELD VALUES → SCORING KEYS ----------
    These are the real dropdown values coming from LeadSquared.
    We translate them into scoring matrix keys before any logic runs.
    If you add new LS dropdown options, add them here.
@@ -143,18 +143,18 @@ function generateReasoning(params) {
 
   const urgencyLabel = {
     "within 30 days":      "very near-term (within 30 days)",
-    "1-3 months":          "near-term (1â€“3 months)",
+    "1-3 months":          "near-term (1–3 months)",
     "this academic cycle": "this academic cycle",
     "next year":           "next year",
     "just researching":    "no fixed timeline",
   }[mappedTimeline] || mappedTimeline;
 
   const intentSentence = generalInquiry && generalInquiry.length > 3
-    ? `The student's own words â€” "${generalInquiry}" â€” indicate a ${inquiryType.toLowerCase()}, which ${adjustment > 0 ? `added ${adjustment} points` : adjustment < 0 ? `reduced the score by ${Math.abs(adjustment)} points` : "did not change the score"}.`
+    ? `The student's own words — "${generalInquiry}" — indicate a ${inquiryType.toLowerCase()}, which ${adjustment > 0 ? `added ${adjustment} points` : adjustment < 0 ? `reduced the score by ${Math.abs(adjustment)} points` : "did not change the score"}.`
     : `No free-text inquiry was provided, so intent was inferred from structured inputs alone.`;
 
   const bucketExplanation = bucket === "High"
-    ? `At ${finalScore}/100, this lead crosses the High readiness threshold (â‰¥70). Agent Flash recommends immediate counselor scheduling.`
+    ? `At ${finalScore}/100, this lead crosses the High readiness threshold (≥70). Agent Flash recommends immediate counselor scheduling.`
     : `At ${finalScore}/100, this lead is below the High readiness threshold (<70). Routed to voice qualification before counselor time is allocated.`;
 
   const programNote = programInterest
@@ -163,7 +163,7 @@ function generateReasoning(params) {
 
   return [
     `Agent Flash assessed this lead based on two structured signals: their stated need ("${rawReadiness}") and enrollment timeline ("${rawTimeline}").`,
-    `This combination produced a base score of ${baseScore}/100 â€” reflecting a ${urgencyLabel} intent window with a focus on ${mappedReadiness}.`,
+    `This combination produced a base score of ${baseScore}/100 — reflecting a ${urgencyLabel} intent window with a focus on ${mappedReadiness}.`,
     intentSentence,
     programNote,
     bucketExplanation,
@@ -195,7 +195,7 @@ app.post("/intent-classifier", (req, res) => {
       });
     }
 
-    /* Map LS values â†’ scoring keys */
+    /* Map LS values → scoring keys */
     const mappedReadiness = READINESS_MAP[rawReadiness];
     const mappedTimeline  = TIMELINE_MAP[rawTimeline];
 
@@ -224,7 +224,7 @@ app.post("/intent-classifier", (req, res) => {
     let finalScore = baseScore + adjustment;
     finalScore = Math.max(0, Math.min(100, finalScore));
 
-    /* Bucket â€” binary only, matches LS automation conditions */
+    /* Bucket — binary only, matches LS automation conditions */
     const bucket = finalScore >= 70 ? "High" : "Low";
 
     /* Reasoning */
