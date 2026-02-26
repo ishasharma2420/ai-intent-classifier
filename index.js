@@ -1,19 +1,39 @@
 import express from "express";
+import cors from "cors";
+import helmet from "helmet";
 
 const app = express();
+
+/* ---------- SECURITY & MIDDLEWARE ----------
+   helmet  → sets safe HTTP response headers (protects against common attacks)
+   cors    → allows LeadSquared and other services to call this endpoint
+   json    → parses incoming JSON, capped at 100kb to prevent oversized payloads
+-------------------------------------------------------------------*/
+app.use(helmet());
+app.use(cors());
 app.use(express.json({ limit: "100kb" }));
 
+/* ---------- HEALTH CHECK ----------
+   Render and monitoring tools ping GET / to confirm the service is alive.
+-------------------------------------------------------------------*/
 app.get("/", (_, res) => {
-  res.send("Agent Flash – AI Lead Readiness Scoring");
+  res.json({
+    service: "Agent Flash – AI Lead Readiness Scoring",
+    status: "ok",
+    version: "2.0.0",
+  });
 });
 
-/* ---------- NORMALIZATION ---------- */
+/* ---------- NORMALIZATION ----------
+   Lowercases and trims all incoming strings so
+   "Fall 2025" and "fall 2025" are treated identically.
+-------------------------------------------------------------------*/
 const norm = v => (v || "").toLowerCase().replace(/\s+/g, " ").trim();
 
 /* ---------- MAP ACTUAL LS FIELD VALUES → SCORING KEYS ----------
-   These are the real dropdown values coming from LeadSquared.
-   We translate them into scoring matrix keys before any logic runs.
-   If you add new LS dropdown options, add them here.
+   LeadSquared sends raw dropdown values exactly as configured.
+   These maps translate them into the keys the scoring matrix expects.
+   If you ever add a new dropdown option in LS, add it here too.
 -------------------------------------------------------------------*/
 const READINESS_MAP = {
   // Low_Readiness_Concern field values
@@ -27,16 +47,17 @@ const READINESS_MAP = {
 
 const TIMELINE_MAP = {
   // Reconnect_Timeline field values
-  "within 3 months":                   "within 30 days",
-  "fall 2025":                         "1-3 months",
-  "spring 2026":                       "this academic cycle",
-  "fall 2026":                         "next year",
-  "just exploring (no fixed timeline)":"just researching",
+  "within 3 months":                    "within 30 days",
+  "fall 2025":                          "1-3 months",
+  "spring 2026":                        "this academic cycle",
+  "fall 2026":                          "next year",
+  "just exploring (no fixed timeline)": "just researching",
 };
 
 /* ---------- BASE SCORE MATRIX ----------
    Rows = engagement_readiness (mapped from LS Low_Readiness_Concern)
    Cols = enrollment_timeline  (mapped from LS Reconnect_Timeline)
+   These numbers represent baseline readiness before free-text adjustment.
 -------------------------------------------------------------------*/
 const BASE_SCORE = {
   "questions on admission": {
@@ -77,8 +98,8 @@ const BASE_SCORE = {
 };
 
 /* ---------- INQUIRY CLASSIFICATION ----------
-   Runs on the free-text general_inquiry field.
-   Returns a human-readable intent label.
+   Reads the student's free-text general inquiry and returns
+   a human-readable intent label used in scoring and reasoning.
 -------------------------------------------------------------------*/
 function classifyInquiry(text) {
   if (!text || text.length < 3) return "General Inquiry";
@@ -106,25 +127,24 @@ function classifyInquiry(text) {
 }
 
 /* ---------- INQUIRY SCORE ADJUSTMENT ----------
-   Softly nudges the base score up or down based on free-text intent.
-   Capped so it cannot cross a bucket boundary on its own.
+   Nudges the base score slightly up or down based on free-text intent.
+   Intentionally small so free text cannot flip a bucket on its own.
 -------------------------------------------------------------------*/
 const INQUIRY_ADJUSTMENT = {
-  "Admissions Inquiry":    8,
-  "Fees & Financial Aid":  5,
-  "Eligibility Check":     4,
-  "Program Selection":     3,
-  "Career Outcomes":       2,
-  "Campus & Experience":   0,
-  "Counselling Request":   1,
-  "Early Research":       -5,
-  "General Inquiry":       0,
+  "Admissions Inquiry":   8,
+  "Fees & Financial Aid": 5,
+  "Eligibility Check":    4,
+  "Program Selection":    3,
+  "Career Outcomes":      2,
+  "Campus & Experience":  0,
+  "Counselling Request":  1,
+  "Early Research":      -5,
+  "General Inquiry":      0,
 };
 
 /* ---------- REASONING GENERATOR ----------
-   Produces a plain-English summary of exactly why this lead
-   received its score and bucket. Shown in the LS activity log.
-   This is the "AI thinking" layer that creates the WOW factor.
+   Produces a plain-English explanation of why this lead received
+   its score and bucket. Written into the LS activity log as AI_Reasoning.
 -------------------------------------------------------------------*/
 function generateReasoning(params) {
   const {
@@ -170,18 +190,18 @@ function generateReasoning(params) {
   ].filter(Boolean).join(" ");
 }
 
-/* ---------- API ENDPOINT ---------- */
+/* ---------- MAIN API ENDPOINT ---------- */
 app.post("/intent-classifier", (req, res) => {
   try {
     const body = req.body || {};
 
-    /* Raw values from LeadSquared */
-    const rawReadiness     = norm(body.engagement_readiness);  // Low_Readiness_Concern
-    const rawTimeline      = norm(body.enrollment_timeline);   // Reconnect_Timeline
-    const generalInquiry   = (body.student_inquiry || "").trim();
-    const programInterest  = (body.program_interest || "").trim();
+    /* Raw values arriving from LeadSquared webhook */
+    const rawReadiness    = norm(body.engagement_readiness); // Low_Readiness_Concern
+    const rawTimeline     = norm(body.enrollment_timeline);  // Reconnect_Timeline
+    const generalInquiry  = (body.student_inquiry   || "").trim();
+    const programInterest = (body.program_interest  || "").trim();
 
-    /* Validate presence */
+    /* Validate that required fields are present */
     if (!rawReadiness) {
       return res.status(400).json({
         success: false,
@@ -195,11 +215,11 @@ app.post("/intent-classifier", (req, res) => {
       });
     }
 
-    /* Map LS values → scoring keys */
+    /* Translate LS dropdown values into scoring matrix keys */
     const mappedReadiness = READINESS_MAP[rawReadiness];
     const mappedTimeline  = TIMELINE_MAP[rawTimeline];
 
-    /* Validate mapping succeeded */
+    /* Validate that the values were recognised */
     if (!mappedReadiness) {
       return res.status(400).json({
         success: false,
@@ -213,21 +233,21 @@ app.post("/intent-classifier", (req, res) => {
       });
     }
 
-    /* Base score lookup */
+    /* Look up base score from matrix */
     const baseScore = BASE_SCORE[mappedReadiness]?.[mappedTimeline] ?? 30;
 
-    /* Inquiry classification + adjustment */
-    const inquiryType  = classifyInquiry(generalInquiry);
-    const adjustment   = INQUIRY_ADJUSTMENT[inquiryType] ?? 0;
+    /* Classify free-text inquiry and get score adjustment */
+    const inquiryType = classifyInquiry(generalInquiry);
+    const adjustment  = INQUIRY_ADJUSTMENT[inquiryType] ?? 0;
 
-    /* Final score */
+    /* Calculate final score, clamped between 0 and 100 */
     let finalScore = baseScore + adjustment;
     finalScore = Math.max(0, Math.min(100, finalScore));
 
-    /* Bucket — binary only, matches LS automation conditions */
+    /* Binary bucket — matches LS automation trigger conditions exactly */
     const bucket = finalScore >= 70 ? "High" : "Low";
 
-    /* Reasoning */
+    /* Generate plain-English reasoning for the LS activity log */
     const reasoning = generateReasoning({
       rawReadiness,
       rawTimeline,
@@ -242,7 +262,7 @@ app.post("/intent-classifier", (req, res) => {
       programInterest,
     });
 
-    /* Response */
+    /* Send response back to LeadSquared */
     res.json({
       success: true,
       ai_output: {
@@ -262,7 +282,7 @@ app.post("/intent-classifier", (req, res) => {
   }
 });
 
-/* ---------- START ---------- */
+/* ---------- START SERVER ---------- */
 const PORT = Number(process.env.PORT) || 10000;
 app.listen(PORT, () => {
   console.log(`Agent Flash listening on port ${PORT}`);
