@@ -172,6 +172,7 @@ function generateReasoning({
 app.post("/intent-classifier", (req, res) => {
   try {
     const body = req.body || {};
+    console.log("INCOMING PAYLOAD:", JSON.stringify(body));
 
     /* Normalize incoming values */
     const rawReadiness    = norm(body.engagement_readiness);
