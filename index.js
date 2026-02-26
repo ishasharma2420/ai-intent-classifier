@@ -171,14 +171,15 @@ function generateReasoning({
 /* ---------- MAIN API ENDPOINT ---------- */
 app.post("/intent-classifier", (req, res) => {
   try {
-    const body = req.body || {};
-    console.log("INCOMING PAYLOAD:", JSON.stringify(body));
+    const raw = req.body || {};
+    // LS sends the full lead object — fields live inside raw.Current with mx_ prefix
+    const body = raw.Current || raw;
 
-    /* Normalize incoming values */
-    const rawReadiness    = norm(body.engagement_readiness);
-    const rawTimeline     = norm(body.enrollment_timeline);
-    const generalInquiry  = (body.student_inquiry  || "").trim();
-    const programInterest = (body.program_interest || "").trim();
+    /* Normalize incoming values — handle both mx_ prefixed and plain field names */
+    const rawReadiness    = norm(body.mx_Engagement_Readiness || body.engagement_readiness);
+    const rawTimeline     = norm(body.mx_Enrollment_Timeline  || body.enrollment_timeline);
+    const generalInquiry  = (body.mx_Student_Inquiry          || body.student_inquiry  || "").trim();
+    const programInterest = (body.mx_Program_Interest         || body.program_interest || "").trim();
 
     /* Validate presence */
     if (!rawReadiness) {
