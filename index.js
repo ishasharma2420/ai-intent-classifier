@@ -14,7 +14,7 @@ app.get("/", (_, res) => {
   res.json({
     service: "Agent Flash – AI Lead Readiness Scoring",
     status: "ok",
-    version: "3.0.0",
+    version: "3.1.0",
   });
 });
 
@@ -24,9 +24,9 @@ app.get("/", (_, res) => {
 const norm = v => (v || "").toLowerCase().replace(/\s+/g, " ").trim();
 
 /* ---------- BASE SCORE MATRIX ----------
-   Rows = engagement_readiness  — exact chatbot dropdown values (lowercased)
-   Cols = enrollment_timeline   — exact chatbot dropdown values (lowercased)
-   No translation layer needed — chatbot sends these values directly.
+   Rows = mx_Engagement_Readiness  — exact CRM dropdown values (lowercased)
+   Cols = mx_Enrollment_Timeline   — exact CRM dropdown values (lowercased)
+   Keys must match the LeadSquared dropdown values EXACTLY after lowercasing.
 -------------------------------------------------------------------*/
 const BASE_SCORE = {
   "ready to apply": {
@@ -36,21 +36,21 @@ const BASE_SCORE = {
     "next year":           60,
     "just researching":    45,
   },
-  "questions on admission": {
+  "need help with admission process": {
     "within 30 days":      78,
     "1-3 months":          70,
     "this academic cycle": 63,
     "next year":           50,
     "just researching":    38,
   },
-  "need fa support": {
+  "needs financial aid support": {
     "within 30 days":      75,
     "1-3 months":          68,
     "this academic cycle": 60,
     "next year":           47,
     "just researching":    35,
   },
-  "need counselling": {
+  "need counselling guidance": {
     "within 30 days":      68,
     "1-3 months":          60,
     "this academic cycle": 53,
