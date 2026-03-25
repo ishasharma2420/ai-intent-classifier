@@ -9,24 +9,37 @@ app.use(helmet());
 app.use(cors());
 app.use(express.json({ limit: "100kb" }));
 
+/* ---------- AI LANGUAGE MODEL CONFIG ----------
+   Uses OpenAI API for intent classification and reasoning generation.
+   Set OPENAI_API_KEY in your environment variables.
+   If the API call fails, the system falls back to deterministic regex.
+-------------------------------------------------------------------*/
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const AI_MODEL = "gpt-4o-mini"; // fast, cheap, accurate for classification
+const AI_ENABLED = !!OPENAI_API_KEY;
+
+if (!AI_ENABLED) {
+  console.warn("⚠️  OPENAI_API_KEY not set — running in deterministic fallback mode (regex only).");
+} else {
+  console.log("✅  AI Language Model enabled for intent classification and reasoning.");
+}
+
 /* ---------- HEALTH CHECK ---------- */
 app.get("/", (_, res) => {
   res.json({
     service: "Agent Flash – AI Lead Readiness Scoring",
     status: "ok",
-    version: "3.1.0",
+    version: "4.0.0",
+    ai_enabled: AI_ENABLED,
   });
 });
 
-/* ---------- NORMALIZATION ----------
-   Lowercases and trims all incoming strings so casing never causes a mismatch.
--------------------------------------------------------------------*/
+/* ---------- NORMALIZATION ---------- */
 const norm = v => (v || "").toLowerCase().replace(/\s+/g, " ").trim();
 
 /* ---------- BASE SCORE MATRIX ----------
-   Rows = mx_Engagement_Readiness  — exact CRM dropdown values (lowercased)
-   Cols = mx_Enrollment_Timeline   — exact CRM dropdown values (lowercased)
-   Keys must match the LeadSquared dropdown values EXACTLY after lowercasing.
+   Rows = engagement_readiness  — exact chatbot dropdown values (lowercased)
+   Cols = enrollment_timeline   — exact chatbot dropdown values (lowercased)
 -------------------------------------------------------------------*/
 const BASE_SCORE = {
   "ready to apply": {
@@ -36,21 +49,21 @@ const BASE_SCORE = {
     "next year":           60,
     "just researching":    45,
   },
-  "need help with admission process": {
+  "questions on admission": {
     "within 30 days":      78,
     "1-3 months":          70,
     "this academic cycle": 63,
     "next year":           50,
     "just researching":    38,
   },
-  "needs financial aid support": {
+  "need fa support": {
     "within 30 days":      75,
     "1-3 months":          68,
     "this academic cycle": 60,
     "next year":           47,
     "just researching":    35,
   },
-  "need counselling guidance": {
+  "need counselling": {
     "within 30 days":      68,
     "1-3 months":          60,
     "this academic cycle": 53,
@@ -73,17 +86,43 @@ const BASE_SCORE = {
   },
 };
 
-/* ---------- VALID VALUE SETS (for error messages) ---------- */
+/* ---------- VALID VALUE SETS ---------- */
 const VALID_READINESS = new Set(Object.keys(BASE_SCORE));
 const VALID_TIMELINES = new Set(
   Object.values(BASE_SCORE).flatMap(obj => Object.keys(obj))
 );
 
-/* ---------- INQUIRY CLASSIFICATION ----------
-   Reads the student's free-text general inquiry and returns
-   a human-readable intent label used in scoring and reasoning.
+/* ---------- VALID INTENT CATEGORIES ---------- */
+const VALID_INTENTS = [
+  "Admissions Inquiry",
+  "Fees & Financial Aid",
+  "Eligibility Check",
+  "Program Selection",
+  "Career Outcomes",
+  "Campus & Experience",
+  "Counselling Request",
+  "Early Research",
+  "General Inquiry",
+];
+
+/* ---------- INQUIRY SCORE ADJUSTMENT ---------- */
+const INQUIRY_ADJUSTMENT = {
+  "Admissions Inquiry":   8,
+  "Fees & Financial Aid": 5,
+  "Eligibility Check":    4,
+  "Program Selection":    3,
+  "Career Outcomes":      2,
+  "Campus & Experience":  0,
+  "Counselling Request":  1,
+  "Early Research":      -5,
+  "General Inquiry":      0,
+};
+
+/* ---------- REGEX FALLBACK CLASSIFIER ----------
+   Used when AI Language Model is unavailable or fails.
+   Deterministic, zero-hallucination fallback.
 -------------------------------------------------------------------*/
-function classifyInquiry(text) {
+function classifyInquiryRegex(text) {
   if (!text || text.length < 3) return "General Inquiry";
 
   const t = text.toLowerCase();
@@ -108,27 +147,87 @@ function classifyInquiry(text) {
   return "General Inquiry";
 }
 
-/* ---------- INQUIRY SCORE ADJUSTMENT ----------
-   Nudges the base score slightly up or down based on free-text intent.
-   Kept small so free text alone cannot flip a bucket.
+/* ---------- AI LANGUAGE MODEL: INTENT CLASSIFICATION ----------
+   Sends the student's free-text inquiry to the AI Language Model
+   and receives a structured intent classification.
+   Falls back to regex if the API call fails.
 -------------------------------------------------------------------*/
-const INQUIRY_ADJUSTMENT = {
-  "Admissions Inquiry":   8,
-  "Fees & Financial Aid": 5,
-  "Eligibility Check":    4,
-  "Program Selection":    3,
-  "Career Outcomes":      2,
-  "Campus & Experience":  0,
-  "Counselling Request":  1,
-  "Early Research":      -5,
-  "General Inquiry":      0,
-};
+async function classifyInquiryAI(text) {
+  if (!text || text.length < 3) return "General Inquiry";
+  if (!AI_ENABLED) return classifyInquiryRegex(text);
 
-/* ---------- REASONING GENERATOR ----------
-   Produces a plain-English explanation of why this lead received
-   its score and bucket. Written into the LS activity log as AI_Reasoning.
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        temperature: 0.1, // low temperature for consistent classification
+        max_tokens: 50,
+        messages: [
+          {
+            role: "system",
+            content: `You are an enrollment intent classifier for a career education institution. Given a student's inquiry, classify it into exactly one of these categories:
+
+1. Admissions Inquiry — wants to apply, asks about deadlines, enrollment steps, how to start
+2. Fees & Financial Aid — asks about cost, tuition, scholarships, FAFSA, financial help, affordability
+3. Eligibility Check — asks about requirements, qualifications, GPA, prerequisites, eligibility
+4. Program Selection — comparing programs, asking which course is best, exploring options between programs
+5. Career Outcomes — asks about jobs, salary, placement, career prospects, ROI, what happens after graduation
+6. Campus & Experience — asks about campus location, facilities, housing, tours, campus life
+7. Counselling Request — wants to speak with an advisor, asks for guidance, help deciding
+8. Early Research — just browsing, exploring, no specific intent, gathering general information
+9. General Inquiry — does not fit any category above
+
+Respond with ONLY the category name, nothing else.`,
+          },
+          {
+            role: "user",
+            content: text,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`AI classification API error: ${response.status}`);
+      return classifyInquiryRegex(text); // fallback
+    }
+
+    const data = await response.json();
+    const aiIntent = (data.choices?.[0]?.message?.content || "").trim();
+
+    // Validate the AI returned a recognised category
+    if (VALID_INTENTS.includes(aiIntent)) {
+      return aiIntent;
+    }
+
+    // If AI returned something unexpected, try to match it loosely
+    const matched = VALID_INTENTS.find(v => 
+      aiIntent.toLowerCase().includes(v.toLowerCase()) || 
+      v.toLowerCase().includes(aiIntent.toLowerCase())
+    );
+    if (matched) return matched;
+
+    // If still no match, fall back to regex
+    console.warn(`AI returned unrecognised intent: "${aiIntent}" — falling back to regex.`);
+    return classifyInquiryRegex(text);
+
+  } catch (err) {
+    console.error("AI classification failed, using regex fallback:", err.message);
+    return classifyInquiryRegex(text);
+  }
+}
+
+/* ---------- AI LANGUAGE MODEL: REASONING GENERATION ----------
+   Generates a contextually rich, plain-English explanation of the
+   scoring decision. Falls back to template-based reasoning if the
+   API call fails.
 -------------------------------------------------------------------*/
-function generateReasoning({
+async function generateReasoningAI({
   rawReadiness,
   rawTimeline,
   baseScore,
@@ -139,25 +238,91 @@ function generateReasoning({
   generalInquiry,
   programInterest,
 }) {
-  const urgencyLabel = {
-    "within 30 days":      "very near-term (within 30 days)",
-    "1-3 months":          "near-term (1–3 months)",
-    "this academic cycle": "this academic cycle",
-    "next year":           "next year",
-    "just researching":    "no fixed timeline",
-  }[rawTimeline] || rawTimeline;
+  // Always have the template fallback ready
+  const templateReasoning = generateReasoningTemplate({
+    rawReadiness, rawTimeline, baseScore, inquiryType,
+    adjustment, finalScore, bucket, generalInquiry, programInterest,
+  });
 
+  if (!AI_ENABLED) return templateReasoning;
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        temperature: 0.7, // slightly creative for natural language
+        max_tokens: 200,
+        messages: [
+          {
+            role: "system",
+            content: `You are Agent Flash, an AI enrollment readiness scoring engine for a career education institution. Write a brief, professional reasoning summary (2-3 sentences max) explaining why this lead received its score. Be specific to the student's situation. Do not use markdown, bullet points, or special characters. Do not use curly braces or double quotes. Write in plain English suitable for an enrollment counselor reading a CRM activity log.`,
+          },
+          {
+            role: "user",
+            content: `Score: ${finalScore}/100 (${bucket})
+Engagement Readiness: ${rawReadiness}
+Enrollment Timeline: ${rawTimeline}
+Detected Intent: ${inquiryType}
+Student Inquiry: ${generalInquiry || "No free-text inquiry provided"}
+Program Interest: ${programInterest || "Not specified"}
+Score Adjustment from Intent: ${adjustment > 0 ? '+' + adjustment : adjustment} points
+
+Write the reasoning summary.`,
+          },
+        ],
+      }),
+    });
+
+    if (!response.ok) {
+      console.error(`AI reasoning API error: ${response.status}`);
+      return templateReasoning;
+    }
+
+    const data = await response.json();
+    let aiReasoning = (data.choices?.[0]?.message?.content || "").trim();
+
+    if (!aiReasoning || aiReasoning.length < 20) {
+      return templateReasoning;
+    }
+
+    // Strip characters that LS mail merge might parse as template tags
+    aiReasoning = aiReasoning.replace(/[{}"]/g, match => match === '"' ? "'" : "");
+
+    // Safety cap at 500 chars for CRM field limits
+    if (aiReasoning.length > 500) {
+      aiReasoning = aiReasoning.substring(0, 497) + "...";
+    }
+
+    return aiReasoning;
+
+  } catch (err) {
+    console.error("AI reasoning failed, using template fallback:", err.message);
+    return templateReasoning;
+  }
+}
+
+/* ---------- TEMPLATE REASONING (FALLBACK) ----------
+   Deterministic template-based reasoning. Used when AI is unavailable.
+-------------------------------------------------------------------*/
+function generateReasoningTemplate({
+  rawReadiness,
+  rawTimeline,
+  baseScore,
+  inquiryType,
+  adjustment,
+  finalScore,
+  bucket,
+  generalInquiry,
+  programInterest,
+}) {
   const intentSentence = generalInquiry && generalInquiry.length > 3
     ? `Student inquiry classified as ${inquiryType.toLowerCase()} (${adjustment > 0 ? '+' + adjustment : adjustment} pts).`
     : ``;
-
-  const bucketExplanation = bucket === "High"
-    ? `At ${finalScore}/100, this lead crosses the High readiness threshold (≥70). Agent Flash recommends immediate counselor scheduling.`
-    : `At ${finalScore}/100, this lead is below the High readiness threshold (<70). Routed to voice qualification before counselor time is allocated.`;
-
-  const programNote = programInterest
-    ? `The student has expressed interest in ${programInterest}.`
-    : "";
 
   const parts = [
     `Lead scored ${finalScore}/100 (${bucket}) based on stated need: ${rawReadiness}, timeline: ${rawTimeline}.`,
@@ -167,18 +332,16 @@ function generateReasoning({
       : `Routed to voice qualification first.`,
   ].filter(Boolean).join(" ");
 
-  // Strip any characters that LS mail merge might try to parse as template tags
   return parts.replace(/[{}"]/g, match => match === '"' ? "'" : "");
 }
 
 /* ---------- MAIN API ENDPOINT ---------- */
-app.post("/intent-classifier", (req, res) => {
+app.post("/intent-classifier", async (req, res) => {
   try {
     const raw = req.body || {};
-    // LS sends the full lead object — fields live inside raw.Current with mx_ prefix
     const body = raw.Current || raw;
 
-    /* Normalize incoming values — handle both mx_ prefixed and plain field names */
+    /* Normalize incoming values */
     const rawReadiness    = norm(body.mx_Engagement_Readiness || body.engagement_readiness);
     const rawTimeline     = norm(body.mx_Enrollment_Timeline  || body.enrollment_timeline);
     const generalInquiry  = (body.mx_Student_Inquiry          || body.student_inquiry  || "").trim();
@@ -215,19 +378,19 @@ app.post("/intent-classifier", (req, res) => {
     /* Look up base score */
     const baseScore = BASE_SCORE[rawReadiness][rawTimeline];
 
-    /* Classify free-text and get adjustment */
-    const inquiryType = classifyInquiry(generalInquiry);
+    /* Classify intent — AI with regex fallback */
+    const inquiryType = await classifyInquiryAI(generalInquiry);
     const adjustment  = INQUIRY_ADJUSTMENT[inquiryType] ?? 0;
 
     /* Final score clamped 0–100 */
     let finalScore = baseScore + adjustment;
     finalScore = Math.max(0, Math.min(100, finalScore));
 
-    /* Binary bucket — matches LS automation exactly */
+    /* Binary bucket */
     const bucket = finalScore >= 70 ? "High" : "Low";
 
-    /* Generate reasoning */
-    const reasoning = generateReasoning({
+    /* Generate reasoning — AI with template fallback */
+    const reasoning = await generateReasoningAI({
       rawReadiness,
       rawTimeline,
       baseScore,
@@ -239,7 +402,7 @@ app.post("/intent-classifier", (req, res) => {
       programInterest,
     });
 
-    /* Respond */
+    /* Respond — same output shape as v3 */
     res.json({
       success: true,
       ai_output: {
@@ -262,5 +425,6 @@ app.post("/intent-classifier", (req, res) => {
 /* ---------- START SERVER ---------- */
 const PORT = Number(process.env.PORT) || 10000;
 app.listen(PORT, () => {
-  console.log(`Agent Flash listening on port ${PORT}`);
+  console.log(`Agent Flash v4.0.0 listening on port ${PORT}`);
+  console.log(`AI Language Model: ${AI_ENABLED ? "ENABLED" : "DISABLED (regex fallback)"}`);
 });
