@@ -251,24 +251,16 @@ async function generateReasoningAI({
       },
       body: JSON.stringify({
         model: AI_MODEL,
-        temperature: 0.7,
-        max_tokens: 200,
+        temperature: 0.5,
+        max_tokens: 120,
         messages: [
           {
             role: "system",
-            content: `You are Agent Flash, an AI enrollment readiness scoring engine for a career education institution. Write a brief, professional reasoning summary (2-3 sentences max) explaining why this lead received its score. Be specific to the student's situation. Do not use markdown, bullet points, or special characters. Do not use curly braces or double quotes. Write in plain English suitable for an enrollment counselor reading a CRM activity log.`,
+            content: `You are Agent Flash, an AI enrollment readiness scoring engine. Write a concise reasoning summary in exactly 2 sentences. Sentence 1: why this lead received its score (reference their specific inquiry, readiness, and timeline). Sentence 2: the recommended next step — if High bucket say immediate counselor scheduling recommended, if Low bucket say routed to voice bot qualification. No markdown, no bullet points, no curly braces, no double quotes. Keep it under 250 characters total.`,
           },
           {
             role: "user",
-            content: `Score: ${finalScore}/100 (${bucket})
-Engagement Readiness: ${rawReadiness}
-Enrollment Timeline: ${rawTimeline}
-Detected Intent: ${inquiryType}
-Student Inquiry: ${generalInquiry || "No free-text inquiry provided"}
-Program Interest: ${programInterest || "Not specified"}
-Score Adjustment from Intent: ${adjustment > 0 ? '+' + adjustment : adjustment} points
-
-Write the reasoning summary.`,
+            content: `Score: ${finalScore}/100 (${bucket}). Readiness: ${rawReadiness}. Timeline: ${rawTimeline}. Intent: ${inquiryType}. Inquiry: ${generalInquiry || "None"}. Program: ${programInterest || "Not specified"}. Adjustment: ${adjustment > 0 ? '+' + adjustment : adjustment} pts.`,
           },
         ],
       }),
@@ -288,8 +280,8 @@ Write the reasoning summary.`,
 
     aiReasoning = aiReasoning.replace(/[{}"]/g, match => match === '"' ? "'" : "");
 
-    if (aiReasoning.length > 500) {
-      aiReasoning = aiReasoning.substring(0, 497) + "...";
+    if (aiReasoning.length > 300) {
+      aiReasoning = aiReasoning.substring(0, 297) + "...";
     }
 
     return aiReasoning;
