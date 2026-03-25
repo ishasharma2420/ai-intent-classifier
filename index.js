@@ -38,8 +38,9 @@ app.get("/", (_, res) => {
 const norm = v => (v || "").toLowerCase().replace(/\s+/g, " ").trim();
 
 /* ---------- BASE SCORE MATRIX ----------
-   Rows = engagement_readiness  — exact chatbot dropdown values (lowercased)
-   Cols = enrollment_timeline   — exact chatbot dropdown values (lowercased)
+   Rows = mx_Engagement_Readiness  — exact CRM dropdown values (lowercased)
+   Cols = mx_Enrollment_Timeline   — exact CRM dropdown values (lowercased)
+   Keys must match the LeadSquared dropdown values EXACTLY after lowercasing.
 -------------------------------------------------------------------*/
 const BASE_SCORE = {
   "ready to apply": {
@@ -49,21 +50,21 @@ const BASE_SCORE = {
     "next year":           60,
     "just researching":    45,
   },
-  "questions on admission": {
+  "need help with admission process": {
     "within 30 days":      78,
     "1-3 months":          70,
     "this academic cycle": 63,
     "next year":           50,
     "just researching":    38,
   },
-  "need fa support": {
+  "needs financial aid support": {
     "within 30 days":      75,
     "1-3 months":          68,
     "this academic cycle": 60,
     "next year":           47,
     "just researching":    35,
   },
-  "need counselling": {
+  "need counselling guidance": {
     "within 30 days":      68,
     "1-3 months":          60,
     "this academic cycle": 53,
@@ -165,7 +166,7 @@ async function classifyInquiryAI(text) {
       },
       body: JSON.stringify({
         model: AI_MODEL,
-        temperature: 0.1, // low temperature for consistent classification
+        temperature: 0.1,
         max_tokens: 50,
         messages: [
           {
@@ -194,25 +195,22 @@ Respond with ONLY the category name, nothing else.`,
 
     if (!response.ok) {
       console.error(`AI classification API error: ${response.status}`);
-      return classifyInquiryRegex(text); // fallback
+      return classifyInquiryRegex(text);
     }
 
     const data = await response.json();
     const aiIntent = (data.choices?.[0]?.message?.content || "").trim();
 
-    // Validate the AI returned a recognised category
     if (VALID_INTENTS.includes(aiIntent)) {
       return aiIntent;
     }
 
-    // If AI returned something unexpected, try to match it loosely
-    const matched = VALID_INTENTS.find(v => 
-      aiIntent.toLowerCase().includes(v.toLowerCase()) || 
+    const matched = VALID_INTENTS.find(v =>
+      aiIntent.toLowerCase().includes(v.toLowerCase()) ||
       v.toLowerCase().includes(aiIntent.toLowerCase())
     );
     if (matched) return matched;
 
-    // If still no match, fall back to regex
     console.warn(`AI returned unrecognised intent: "${aiIntent}" — falling back to regex.`);
     return classifyInquiryRegex(text);
 
@@ -223,9 +221,8 @@ Respond with ONLY the category name, nothing else.`,
 }
 
 /* ---------- AI LANGUAGE MODEL: REASONING GENERATION ----------
-   Generates a contextually rich, plain-English explanation of the
-   scoring decision. Falls back to template-based reasoning if the
-   API call fails.
+   Generates a contextually rich, plain-English explanation.
+   Falls back to template-based reasoning if the API call fails.
 -------------------------------------------------------------------*/
 async function generateReasoningAI({
   rawReadiness,
@@ -238,7 +235,6 @@ async function generateReasoningAI({
   generalInquiry,
   programInterest,
 }) {
-  // Always have the template fallback ready
   const templateReasoning = generateReasoningTemplate({
     rawReadiness, rawTimeline, baseScore, inquiryType,
     adjustment, finalScore, bucket, generalInquiry, programInterest,
@@ -255,7 +251,7 @@ async function generateReasoningAI({
       },
       body: JSON.stringify({
         model: AI_MODEL,
-        temperature: 0.7, // slightly creative for natural language
+        temperature: 0.7,
         max_tokens: 200,
         messages: [
           {
@@ -290,10 +286,8 @@ Write the reasoning summary.`,
       return templateReasoning;
     }
 
-    // Strip characters that LS mail merge might parse as template tags
     aiReasoning = aiReasoning.replace(/[{}"]/g, match => match === '"' ? "'" : "");
 
-    // Safety cap at 500 chars for CRM field limits
     if (aiReasoning.length > 500) {
       aiReasoning = aiReasoning.substring(0, 497) + "...";
     }
@@ -306,9 +300,7 @@ Write the reasoning summary.`,
   }
 }
 
-/* ---------- TEMPLATE REASONING (FALLBACK) ----------
-   Deterministic template-based reasoning. Used when AI is unavailable.
--------------------------------------------------------------------*/
+/* ---------- TEMPLATE REASONING (FALLBACK) ---------- */
 function generateReasoningTemplate({
   rawReadiness,
   rawTimeline,
@@ -402,7 +394,7 @@ app.post("/intent-classifier", async (req, res) => {
       programInterest,
     });
 
-    /* Respond — same output shape as v3 */
+    /* Respond — same output shape as v3.1 */
     res.json({
       success: true,
       ai_output: {
